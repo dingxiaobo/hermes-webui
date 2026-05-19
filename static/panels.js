@@ -13,6 +13,7 @@ let _kanbanCurrentBoard = null;
 let _kanbanBoardsList = null;
 let _kanbanBoardMenuOpen = false;
 let _kanbanIsDispatching = false;
+let _kanbanSuppressCardClickUntil = 0;
 // SSE event stream — replaces the 30s polling cadence with a long-lived
 // /api/kanban/events/stream connection. Falls back to polling when the
 // EventSource fails to connect (proxy that strips text/event-stream, etc).
@@ -1264,10 +1265,31 @@ async function quickKanbanCardAction(event, taskId, status){
   return updateKanbanTask(taskId, {status});
 }
 
+function _kanbanSuppressNextCardClick(){
+  _kanbanSuppressCardClickUntil = Date.now() + 700;
+}
+
 function dragKanbanTask(event, taskId){
+  _kanbanSuppressNextCardClick();
   if (!event.dataTransfer) return;
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('text/plain', taskId);
+}
+
+function finishKanbanDrag(event){
+  if (event) _kanbanSuppressNextCardClick();
+}
+
+function openKanbanCard(event, taskId){
+  if (Date.now() < _kanbanSuppressCardClickUntil) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    return false;
+  }
+  loadKanbanTask(taskId);
+  return false;
 }
 
 function allowKanbanDrop(event){
@@ -1290,10 +1312,13 @@ function clearKanbanDrop(event){
 }
 
 async function dropKanbanTask(event, status){
+  _kanbanSuppressNextCardClick();
   event.preventDefault();
+  event.stopPropagation();
   clearKanbanDrop(event);
   const taskId = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
-  if (taskId && status) await updateKanbanTask(taskId, {status});
+  if (taskId && status) await updateKanbanTask(taskId, {status}, {openDetail: false});
+  _kanbanSuppressNextCardClick();
 }
 
 function _kanbanLaneNames(columns){
@@ -1356,7 +1381,7 @@ function _kanbanCard(task, status){
   const stale = _kanbanCardStalenessClass(task);
   const body = _kanbanTaskBody(task);
   const assignee = task.assignee ? `<span class="kanban-card-assignee">@${esc(task.assignee)}</span>` : `<span class="kanban-card-unassigned">${esc(t('kanban_unassigned'))}</span>`;
-  return `<article class="kanban-card ${esc(stale)}" data-kanban-task-id="${esc(task.id)}" draggable="true" ondragstart="dragKanbanTask(event, '${esc(task.id)}')" onclick="loadKanbanTask('${esc(task.id)}')" tabindex="0" role="button" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadKanbanTask('${esc(task.id)}')}">
+  return `<article class="kanban-card ${esc(stale)}" data-kanban-task-id="${esc(task.id)}" draggable="true" ondragstart="dragKanbanTask(event, '${esc(task.id)}')" ondragend="finishKanbanDrag(event)" onclick="return openKanbanCard(event, '${esc(task.id)}')" tabindex="0" role="button" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadKanbanTask('${esc(task.id)}')}">
     <div class="kanban-card-topline"><span class="kanban-card-id">${esc(task.id || '')}</span>${priority ? `<span class="kanban-badge priority">P${priority}</span>` : ''}${task.tenant ? `<span class="kanban-badge tenant">${esc(task.tenant)}</span>` : ''}</div>
     <div class="kanban-card-title">${esc(_kanbanTaskTitle(task))}</div>
     ${body ? `<div class="kanban-card-body">${_kanbanRenderMarkdown(body)}</div>` : ''}
@@ -2269,15 +2294,16 @@ async function submitKanbanTaskModal(){
   }
 }
 
-async function updateKanbanTask(taskId, patch){
+async function updateKanbanTask(taskId, patch, opts){
   if (!taskId || !patch) return;
   try {
+    const openDetail = !opts || opts.openDetail !== false;
     const updated = await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + _kanbanBoardQuery(), {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
     await loadKanban(true);
-    await loadKanbanTask((updated && updated.task && updated.task.id) || taskId);
+    if (openDetail) await loadKanbanTask((updated && updated.task && updated.task.id) || taskId);
   } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
 }
 
@@ -3563,12 +3589,13 @@ async function deleteCurrentSkill() {
 
 // ── Memory (main view) ──
 let _memoryData = null;
-let _currentMemorySection = null; // 'memory' | 'user'
+let _currentMemorySection = null; // 'memory' | 'user' | 'soul'
 let _memoryMode = 'empty'; // 'empty' | 'read' | 'edit'
 
 const MEMORY_SECTIONS = [
   { key: 'memory', labelKey: 'my_notes', emptyKey: 'no_notes_yet', iconKey: 'brain' },
   { key: 'user',   labelKey: 'user_profile', emptyKey: 'no_profile_yet', iconKey: 'user' },
+  { key: 'soul',   labelKey: 'agent_soul', emptyKey: 'no_soul_yet', iconKey: 'sparkles' },
 ];
 
 function _memorySectionMeta(key) {
@@ -3577,12 +3604,16 @@ function _memorySectionMeta(key) {
 
 function _memorySectionContent(key) {
   if (!_memoryData) return '';
-  return key === 'user' ? (_memoryData.user || '') : (_memoryData.memory || '');
+  if (key === 'user') return _memoryData.user || '';
+  if (key === 'soul') return _memoryData.soul || '';
+  return _memoryData.memory || '';
 }
 
 function _memorySectionMtime(key) {
   if (!_memoryData) return 0;
-  return key === 'user' ? (_memoryData.user_mtime || 0) : (_memoryData.memory_mtime || 0);
+  if (key === 'user') return _memoryData.user_mtime || 0;
+  if (key === 'soul') return _memoryData.soul_mtime || 0;
+  return _memoryData.memory_mtime || 0;
 }
 
 function _setMemoryHeaderButtons(mode) {
@@ -5255,6 +5286,8 @@ function _preferencesPayloadFromUi(){
   if(langSel) payload.language=langSel.value;
   const showUsageCb=$('settingsShowTokenUsage');
   if(showUsageCb) payload.show_token_usage=showUsageCb.checked;
+  const showQuotaChipCb=$('settingsShowQuotaChip');
+  if(showQuotaChipCb) payload.show_quota_chip=showQuotaChipCb.checked;
   const showTpsCb=$('settingsShowTps');
   if(showTpsCb) payload.show_tps=showTpsCb.checked;
   const fadeTextCb=$('settingsFadeTextEffect');
@@ -5265,6 +5298,8 @@ function _preferencesPayloadFromUi(){
   if(apiRedactCb) payload.api_redact_enabled=apiRedactCb.checked;
   const showCliCb=$('settingsShowCliSessions');
   if(showCliCb) payload.show_cli_sessions=showCliCb.checked;
+  const showPreviousMessagingCb=$('settingsShowPreviousMessagingSessions');
+  if(showPreviousMessagingCb) payload.show_previous_messaging_sessions=showPreviousMessagingCb.checked;
   const syncCb=$('settingsSyncInsights');
   if(syncCb) payload.sync_to_insights=syncCb.checked;
   const updateCb=$('settingsCheckUpdates');
@@ -5273,6 +5308,8 @@ function _preferencesPayloadFromUi(){
   if(whatsNewSummaryCb) payload.whats_new_summary_enabled=whatsNewSummaryCb.checked;
   const soundCb=$('settingsSoundEnabled');
   if(soundCb) payload.sound_enabled=soundCb.checked;
+  const rtlCb=$('settingsRtl');
+  if(rtlCb) payload.rtl=rtlCb.checked;
   const notifCb=$('settingsNotificationsEnabled');
   if(notifCb) payload.notifications_enabled=notifCb.checked;
   const sidebarDensitySel=$('settingsSidebarDensity');
@@ -5493,6 +5530,18 @@ async function loadSettingsPanel(){
     }
     const showUsageCb=$('settingsShowTokenUsage');
     if(showUsageCb){showUsageCb.checked=!!settings.show_token_usage;showUsageCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    // Ambient provider quota chip toggle — default off; only shows at ≥1400px viewport
+    // when enabled (see style.css @media (max-width:1399.98px) rule).
+    const showQuotaChipCb=$('settingsShowQuotaChip');
+    if(showQuotaChipCb){
+      showQuotaChipCb.checked=settings.show_quota_chip===true;
+      window._showQuotaChip=showQuotaChipCb.checked;
+      showQuotaChipCb.addEventListener('change',()=>{
+        window._showQuotaChip=showQuotaChipCb.checked;
+        if(typeof refreshProviderQuotaIndicator==='function') refreshProviderQuotaIndicator();
+        _schedulePreferencesAutosave();
+      },{once:false});
+    }
     const showTpsCb=$('settingsShowTps');
     if(showTpsCb){showTpsCb.checked=!!settings.show_tps;showTpsCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const fadeTextCb=$('settingsFadeTextEffect');
@@ -5503,6 +5552,8 @@ async function loadSettingsPanel(){
     if(apiRedactCb){apiRedactCb.checked=settings.api_redact_enabled!==false;apiRedactCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const showCliCb=$('settingsShowCliSessions');
     if(showCliCb){showCliCb.checked=!!settings.show_cli_sessions;showCliCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    const showPreviousMessagingCb=$('settingsShowPreviousMessagingSessions');
+    if(showPreviousMessagingCb){showPreviousMessagingCb.checked=!!settings.show_previous_messaging_sessions;showPreviousMessagingCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const syncCb=$('settingsSyncInsights');
     if(syncCb){syncCb.checked=!!settings.sync_to_insights;syncCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const updateCb=$('settingsCheckUpdates');
@@ -5511,6 +5562,20 @@ async function loadSettingsPanel(){
     if(whatsNewSummaryCb){whatsNewSummaryCb.checked=!!settings.whats_new_summary_enabled;whatsNewSummaryCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
     const soundCb=$('settingsSoundEnabled');
     if(soundCb){soundCb.checked=!!settings.sound_enabled;soundCb.addEventListener('change',_schedulePreferencesAutosave,{once:false});}
+    // Right-to-left chat layout (#1721 salvage) — Settings-only, no composer button.
+    const rtlCb=$('settingsRtl');
+    if(rtlCb){
+      const saved=!!settings.rtl || localStorage.getItem('hermes-rtl')==='true';
+      rtlCb.checked=saved;
+      try{localStorage.setItem('hermes-rtl',saved?'true':'false');}catch(_){}
+      document.documentElement.classList.toggle('chat-content-rtl',saved);
+      rtlCb.addEventListener('change',()=>{
+        const on=rtlCb.checked;
+        try{localStorage.setItem('hermes-rtl',on?'true':'false');}catch(_){}
+        document.documentElement.classList.toggle('chat-content-rtl',on);
+        _schedulePreferencesAutosave();
+      },{once:false});
+    }
     // TTS settings (localStorage-only, no server round-trip needed)
     const ttsEnabledCb=$('settingsTtsEnabled');
     if(ttsEnabledCb){ttsEnabledCb.checked=localStorage.getItem('hermes-tts-enabled')==='true';ttsEnabledCb.onchange=function(){localStorage.setItem('hermes-tts-enabled',this.checked?'true':'false');_applyTtsEnabled(this.checked);};}
@@ -5655,7 +5720,7 @@ async function loadPluginsPanel(){
       list.appendChild(_buildPluginCard(plugin));
     }
   }catch(e){
-    list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load plugins: '+esc(e.message||String(e))+'</div>';
+    list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">'+t('plugins_load_failed')+esc(e.message||String(e))+'</div>';
   }
 }
 
@@ -5666,21 +5731,21 @@ function _buildPluginCard(plugin){
   const hooks=Array.isArray(plugin&&plugin.hooks)?plugin.hooks:[];
   const hookHtml=hooks.length
     ? hooks.map(h=>`<span class="plugin-hook-badge">${esc(h)}</span>`).join('')
-    : '<span class="plugin-hook-empty">No registered lifecycle hooks</span>';
-  const version=(plugin&&plugin.version)?` · v${esc(plugin.version)}`:'';
-  const desc=(plugin&&plugin.description)?esc(plugin.description):'No description provided.';
+    : '<span class="plugin-hook-empty">'+t('plugins_no_hooks')+'</span>';
+  const version=(plugin&&plugin.version)?' · v'+esc(plugin.version):'';
+  const desc=(plugin&&plugin.description)?esc(plugin.description):t('plugins_no_description');
   const enabled=plugin&&plugin.enabled!==false;
   card.innerHTML=`
     <div class="provider-card-header plugin-card-header">
       <div class="provider-card-info">
-        <div class="provider-card-name">${esc((plugin&&plugin.name)||'Unnamed plugin')}</div>
+        <div class="provider-card-name">${esc((plugin&&plugin.name)||t('plugins_unnamed'))}</div>
         <div class="provider-card-meta">${esc((plugin&&plugin.key)||'plugin')}${version}</div>
       </div>
-      <span class="provider-card-badge ${enabled?'':'plugin-card-badge-disabled'}">${enabled?'Enabled':'Disabled'}</span>
+      <span class="provider-card-badge ${enabled?'':'plugin-card-badge-disabled'}">${enabled?t('plugins_enabled'):t('plugins_disabled')}</span>
     </div>
     <div class="provider-card-body plugin-card-body">
       <div class="provider-card-hint">${desc}</div>
-      <div class="provider-card-label">Registered hooks</div>
+      <div class="provider-card-label">${t('plugins_registered_hooks')}</div>
       <div class="plugin-hook-list">${hookHtml}</div>
     </div>
   `;
@@ -6245,12 +6310,14 @@ function _setSettingsAuthButtonsVisible(active){
 }
 
 function _applySavedSettingsUi(saved, body, opts){
-  const {sendKey,showTokenUsage,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize}=opts;
+  const {sendKey,showTokenUsage,showQuotaChip,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize}=opts;
   window._sendKey=sendKey||'enter';
   window._showTokenUsage=showTokenUsage;
+  window._showQuotaChip=showQuotaChip===true;
   window._showTps=showTps;
   window._fadeTextEffect=!!fadeTextEffect;
   window._showCliSessions=showCliSessions;
+  window._showPreviousMessagingSessions=!!body.show_previous_messaging_sessions;
   window._soundEnabled=body.sound_enabled;
   window._notificationsEnabled=body.notifications_enabled;
   window._whatsNewSummaryEnabled=!!body.whats_new_summary_enabled;
@@ -6342,9 +6409,11 @@ async function saveSettings(andClose){
   const modelChanged=(model||'')!==(_settingsHermesDefaultModelOnOpen||'');
   const sendKey=($('settingsSendKey')||{}).value;
   const showTokenUsage=!!($('settingsShowTokenUsage')||{}).checked;
+  const showQuotaChip=!!($('settingsShowQuotaChip')||{}).checked;
   const showTps=!!($('settingsShowTps')||{}).checked;
   const fadeTextEffect=!!($('settingsFadeTextEffect')||{}).checked;
   const showCliSessions=!!($('settingsShowCliSessions')||{}).checked;
+  const showPreviousMessagingSessions=!!($('settingsShowPreviousMessagingSessions')||{}).checked;
   const pw=($('settingsPassword')||{}).value;
   const theme=($('settingsTheme')||{}).value||'dark';
   const skin=($('settingsSkin')||{}).value||'default';
@@ -6362,15 +6431,18 @@ async function saveSettings(andClose){
   body.session_endless_scroll=!!($('settingsSessionEndlessScroll')||{}).checked;
   body.language=language;
   body.show_token_usage=showTokenUsage;
+  body.show_quota_chip=showQuotaChip===true;
   body.show_tps=showTps;
   body.fade_text_effect=fadeTextEffect;
   body.simplified_tool_calling=!!($('settingsSimplifiedToolCalling')||{}).checked;
   body.api_redact_enabled=!!($('settingsApiRedact')||{}).checked;
   body.show_cli_sessions=showCliSessions;
+  body.show_previous_messaging_sessions=showPreviousMessagingSessions;
   body.sync_to_insights=!!($('settingsSyncInsights')||{}).checked;
   body.check_for_updates=!!($('settingsCheckUpdates')||{}).checked;
   body.whats_new_summary_enabled=!!($('settingsWhatsNewSummary')||{}).checked;
   body.sound_enabled=!!($('settingsSoundEnabled')||{}).checked;
+  body.rtl=!!($('settingsRtl')||{}).checked;
   body.notifications_enabled=!!($('settingsNotificationsEnabled')||{}).checked;
   body.show_thinking=window._showThinking!==false;
   body.sidebar_density=sidebarDensity;
@@ -6390,7 +6462,7 @@ async function saveSettings(andClose){
           if(typeof showToast==='function') showToast('Failed to update default model — settings saved');
         }
       }
-      _applySavedSettingsUi(saved, body, {sendKey,showTokenUsage,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize});
+      _applySavedSettingsUi(saved, body, {sendKey,showTokenUsage,showQuotaChip,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize});
       showToast(t(saved.auth_just_enabled?'settings_saved_pw':'settings_saved_pw_updated'));
       _settingsDirty=false;
       _resetSettingsPanelState();
@@ -6409,7 +6481,7 @@ async function saveSettings(andClose){
         if(typeof showToast==='function') showToast('Failed to update default model — settings saved');
       }
     }
-    _applySavedSettingsUi(saved, body, {sendKey,showTokenUsage,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize});
+    _applySavedSettingsUi(saved, body, {sendKey,showTokenUsage,showQuotaChip,showTps,fadeTextEffect,showCliSessions,theme,skin,language,sidebarDensity,fontSize});
     showToast(t('settings_saved'));
     _settingsDirty=false;
     _resetSettingsPanelState();

@@ -634,6 +634,91 @@ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded'
 else _initMediaPlaybackObserver();
 setTimeout(_initMediaPlaybackObserver,0);
 
+// ── Ambient provider quota indicator (#1766) ────────────────────────────────
+let _providerQuotaRefreshInFlight=false;
+
+function _formatQuotaMoneyShort(value){
+  const n=Number(value);
+  if(!Number.isFinite(n)) return '';
+  if(Math.abs(n)>=100) return '$'+n.toFixed(0);
+  if(Math.abs(n)>=10) return '$'+n.toFixed(1);
+  return '$'+n.toFixed(2);
+}
+function _formatQuotaPercentShort(value){
+  const n=Number(value);
+  if(!Number.isFinite(n)) return '';
+  return Math.max(0,Math.min(100,n)).toFixed(0)+'%';
+}
+function _providerQuotaIndicatorText(status){
+  if(!status||status.status!=='available') return null;
+  const provider=status.display_name||status.provider||'Provider';
+  const accountLimits=status.account_limits||null;
+  if(accountLimits&&Array.isArray(accountLimits.windows)&&accountLimits.windows.length){
+    const w=accountLimits.windows.find(x=>x&&Number.isFinite(Number(x.remaining_percent)))||accountLimits.windows[0];
+    const remaining=_formatQuotaPercentShort(w&&w.remaining_percent);
+    if(remaining) return {label:provider+' '+remaining, title:(status.message||'Provider usage loaded')+' — '+remaining+' remaining'};
+  }
+  const quota=status.quota||null;
+  if(quota){
+    const remaining=_formatQuotaMoneyShort(quota.limit_remaining);
+    const used=_formatQuotaMoneyShort(quota.usage);
+    const limit=_formatQuotaMoneyShort(quota.limit);
+    if(remaining){
+      const parts=[];
+      if(used) parts.push('used '+used);
+      if(limit) parts.push('limit '+limit);
+      return {label:provider+' '+remaining, title:(status.message||'Provider quota loaded')+(parts.length?' — '+parts.join(' · '):'')};
+    }
+  }
+  return null;
+}
+function renderProviderQuotaIndicator(status){
+  const chip=$('providerQuotaChip');
+  const label=$('providerQuotaChipLabel');
+  if(!chip||!label) return;
+  // Hide entirely when the user has disabled the ambient quota chip in Settings.
+  // Default is off (window._showQuotaChip defaults to false in boot.js) so users
+  // never see the chip unless they opt in.
+  if(window._showQuotaChip!==true){
+    chip.hidden=true;
+    label.textContent='';
+    chip.removeAttribute('title');
+    return;
+  }
+  const text=_providerQuotaIndicatorText(status);
+  if(!text||status.status!=='available'||(!status.quota&&!status.account_limits)){
+    chip.hidden=true;
+    label.textContent='';
+    chip.removeAttribute('title');
+    return;
+  }
+  label.textContent=text.label;
+  chip.title=text.title;
+  chip.hidden=false;
+}
+async function refreshProviderQuotaIndicator(){
+  // Short-circuit before the fetch when the chip is disabled — no point asking
+  // the server for quota data the UI will throw away.
+  if(window._showQuotaChip!==true){
+    const chip=$('providerQuotaChip');
+    if(chip){chip.hidden=true;chip.removeAttribute('title');}
+    return;
+  }
+  if(_providerQuotaRefreshInFlight) return;
+  _providerQuotaRefreshInFlight=true;
+  try{
+    const status=await api('/api/provider/quota');
+    renderProviderQuotaIndicator(status);
+  }catch(_e){
+    renderProviderQuotaIndicator(null);
+  }finally{
+    _providerQuotaRefreshInFlight=false;
+  }
+}
+window.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&typeof refreshProviderQuotaIndicator==='function') refreshProviderQuotaIndicator();
+});
+
 // Dynamic model labels -- populated by populateModelDropdown(), fallback to static map
 let _dynamicModelLabels={};
 window._configuredModelBadges=window._configuredModelBadges||{};
@@ -659,6 +744,18 @@ function _providerFromModelValue(modelId){
   const value=String(modelId||'').trim();
   if(value.startsWith('@')&&value.includes(':')) return value.slice(1,value.lastIndexOf(':'));
   return '';
+}
+function _providerSkipsModelMismatchWarning(providerId){
+  const p=String(providerId||'').toLowerCase();
+  return !p||p==='custom'||p.startsWith('custom:')||p==='openrouter';
+}
+function _providerDefersMissingModelFallback(providerId){
+  const p=String(providerId||'').toLowerCase();
+  // Named custom providers and OpenRouter can legitimately route vendor-prefixed
+  // model IDs that are not present in the current static catalog. Do not
+  // silently rewrite those sessions to the default just because the option has
+  // not been hydrated yet (#2405).
+  return p.startsWith('custom:')||p==='openrouter';
 }
 function _modelStateForSelect(sel, modelId){
   const value=String(modelId||'').trim();
@@ -921,21 +1018,20 @@ function _addLiveModelsToSelect(provider, models, sel){
     sel.appendChild(providerGroup);
   }
   const existingIds=new Set([...sel.options].map(o=>o.value));
-  // Normalized dedup: strip @provider: prefix and unify separators so
+  // Normalized dedup: strip one @provider: prefix and namespace so
   // 'minimax/minimax-m2.7' matches '@nous:minimax/minimax-m2.7' (#907).
-  // Strip ONLY the first colon — Ollama tag IDs are multi-colon
-  // (e.g. '@ollama-cloud:qwen3-vl:235b-instruct') and split(':',2) would
-  // truncate the tag suffix in JS (the limit arg discards extras, unlike Python).
   const _normId=id=>{
     let s=String(id||'');
-    if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1); // strip only @provider:
-    s=s.split('/').pop();                                                    // strip namespace prefix
+    if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1);
+    s=s.split('/').pop();
     return s.replace(/-/g,'.').toLowerCase();
   };
   const existingNorm=new Set([...sel.options].map(o=>_normId(o.value)));
   let added=0;
   const _ap=(window._activeProvider||'').toLowerCase();
-  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && _ap!=='openai-codex' && provider===_ap;
+  const _providerLower=String(provider||'').toLowerCase();
+  const _isNamedCustomActiveProvider=_ap.startsWith('custom:');
+  const _isPortalFetch=_ap && _ap!=='openrouter' && _ap!=='custom' && _ap!=='openai-codex' && (_providerLower===_ap||_isNamedCustomActiveProvider&&_providerLower===_ap);
   for(const m of models){
     let mid=m.id;
     if(_isPortalFetch && !mid.startsWith('@')){
@@ -1006,7 +1102,7 @@ async function _fetchLiveModels(provider, sel){
  */
 function _checkProviderMismatch(modelId){
   const ap=(window._activeProvider||'').toLowerCase();
-  if(!ap||ap==='custom'||ap.startsWith('custom:')||ap==='openrouter') return null; // can't reliably check
+  if(_providerSkipsModelMismatchWarning(ap)) return null; // can't reliably check
   // @provider: prefixed IDs came from that provider's live model list — no mismatch possible
   if(modelId.startsWith('@')) return null;
   const slash=modelId.indexOf('/');
@@ -1818,7 +1914,69 @@ if(typeof document!=='undefined'){
 // prevent the new chat's first scroll comparing against the previous chat's
 // scrollTop (Opus stage-302 SHOULD-FIX, #1731 follow-up).
 function _resetScrollDirectionTracker(){ _lastScrollTop=null; }
-if (typeof window !== 'undefined') window._resetScrollDirectionTracker = _resetScrollDirectionTracker;
+if(typeof window!=='undefined') window._resetScrollDirectionTracker=_resetScrollDirectionTracker;
+/* ── Pull-to-refresh for PWA standalone (Android) ── */
+(function(){
+  if(typeof document==='undefined') return;
+  const isStandalone=window.navigator?.standalone||matchMedia('(display-mode:standalone),(display-mode:fullscreen)').matches;
+  if(!isStandalone) return;
+  const el=document.getElementById('messages');
+  if(!el) return;
+  let _ptrState=0; // 0=idle, 1=pulling, 2=ready
+  let _ptrStartY=0;
+  let _ptrCurrentY=0;
+  const THRESHOLD=80;
+  let _indicator=null;
+  function _ptrCreateIndicator(){
+    if(_indicator) return;
+    _indicator=document.createElement('div');
+    _indicator.className='pull-to-refresh-indicator';
+    _indicator.innerHTML='<span class="ptr-icon">↓</span> <span class="ptr-text">Pull to refresh</span>';
+    el.parentNode.insertBefore(_indicator,el);
+  }
+  function _ptrUpdate(progress){
+    _ptrCreateIndicator();
+    const pulling=progress<1;
+    _indicator.classList.toggle('active',progress>0);
+    const icon=_indicator.querySelector('.ptr-icon');
+    const text=_indicator.querySelector('.ptr-text');
+    if(icon) icon.classList.toggle('ready',!pulling);
+    if(text) text.textContent=pulling?'Pull to refresh':'Release to refresh';
+  }
+  function _ptrReset(){
+    _ptrState=0;
+    _ptrStartY=0;
+    _ptrCurrentY=0;
+    if(_indicator) _indicator.classList.remove('active');
+  }
+  el.addEventListener('touchstart',function(e){
+    if(el.scrollTop>0||_ptrState!==0) return;
+    _ptrStartY=e.touches[0].clientY;
+    _ptrState=1;
+  },{passive:true});
+  el.addEventListener('touchmove',function(e){
+    if(_ptrState!==1) return;
+    _ptrCurrentY=e.touches[0].clientY;
+    const pull=_ptrCurrentY-_ptrStartY;
+    if(pull<0){ _ptrReset(); return; }
+    /* If not at the top, smooth-scroll to top first.
+       Next pull gesture will trigger the refresh. */
+    if(el.scrollTop>0){
+      el.scrollTo({top:0,behavior:'smooth'});
+      _ptrReset();
+      return;
+    }
+    const progress=Math.min(pull/THRESHOLD,1);
+    _ptrUpdate(progress);
+    _ptrState=progress>=1?2:1;
+    if(progress>0.3) e.preventDefault();
+  },{passive:false});
+  el.addEventListener('touchend',function(){
+    if(_ptrState===2){ window.location.reload(); return; }
+    _ptrReset();
+  },{passive:true});
+  el.addEventListener('touchcancel',_ptrReset,{passive:true});
+})();
 (function(){
   const el=document.getElementById('messages');
   if(!el) return;
@@ -1874,6 +2032,46 @@ function _formatActiveElapsedTimer(seconds){
   const s=total%60;
   return`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
+const _COMPRESSION_ELAPSED_MAX_SECONDS=5*60;
+let _compressionElapsedTimer=null;
+function _compressionElapsedStartedAt(state){const n=Number(state&&state.startedAt);return Number.isFinite(n)&&n>0?n:null;}
+function _compressionElapsedLabel(state){
+  const started=_compressionElapsedStartedAt(state);
+  if(!started)return'';
+  const elapsed=Math.max(0,(Date.now()/1000)-started);
+  if(elapsed>=_COMPRESSION_ELAPSED_MAX_SECONDS)return '5+ min';
+  return _formatActiveElapsedTimer(elapsed);
+}
+function _compressionElapsedExpired(state){const started=_compressionElapsedStartedAt(state);return !!(started&&((Date.now()/1000)-started)>=_COMPRESSION_ELAPSED_MAX_SECONDS);}
+function _compressionLiveCardNode(){return document.querySelector('[data-live-compression-card="1"][data-compression-started-at]');}
+function _compressionLiveCardState(){
+  const node=_compressionLiveCardNode();
+  const started=Number(node&&node.getAttribute('data-compression-started-at'));
+  if(!node||!S.session||!Number.isFinite(started)||started<=0)return null;
+  return {sessionId:S.session.session_id,phase:'running',automatic:true,message:node.getAttribute('data-compression-message')||'Auto-compressing context...',startedAt:started};
+}
+function _updateCompressionElapsedCards(state){
+  if(!state)return false;
+  const preview=_autoCompressionPreviewText(state), detail=_autoCompressionDetailText(state);
+  let updated=false;
+  document.querySelectorAll('.tool-card-compress-auto.tool-card-compress-running').forEach(card=>{
+    const previewEl=card.querySelector('.tool-card-preview');
+    const detailEl=card.querySelector('.tool-card-result pre');
+    if(previewEl) previewEl.textContent=preview;
+    if(detailEl) detailEl.textContent=detail;
+    updated=true;
+  });
+  return updated;
+}
+function _updateCompressionElapsedTimer(){
+  const state=_compressionStateForCurrentSession()||_compressionLiveCardState();
+  if(state&&state.automatic&&state.phase==='running'){
+    _updateCompressionElapsedCards(state);
+    if(_compressionElapsedExpired(state)) _clearCompressionElapsedTimer();
+  }else _clearCompressionElapsedTimer();
+}
+function _startCompressionElapsedTimer(){if(!_compressionElapsedTimer)_compressionElapsedTimer=setInterval(_updateCompressionElapsedTimer,1000);}
+function _clearCompressionElapsedTimer(){if(_compressionElapsedTimer){clearInterval(_compressionElapsedTimer);_compressionElapsedTimer=null;}}
 let _activityElapsedTimer=null;
 let _activityElapsedTimerGroup=null;
 function _activityElapsedStartedAt(group){
@@ -2024,12 +2222,14 @@ function _syncCtxIndicator(usage){
   // branch below — honest "no data" instead of misleading "890% used".
   const promptTok=usage.last_prompt_tokens||0;
   const totalTok=(usage.input_tokens||0)+(usage.output_tokens||0);
+  const cacheReadTok=usage.cache_read_tokens||0;
+  const cacheWriteTok=usage.cache_write_tokens||0;
   // Default context window to 128K when not provided by backend
   const DEFAULT_CTX=128*1024;
   const ctxWindow=usage.context_length||DEFAULT_CTX;
   const cost=usage.estimated_cost;
   // Show indicator whenever we have any usage data (tokens or cost)
-  if(!promptTok&&!totalTok&&!cost){
+  if(!promptTok&&!totalTok&&!cost&&!cacheReadTok&&!cacheWriteTok){
     if(wrap) wrap.style.display='none';
     _syncMobileCtxDisplay({visible:false});
     return;
@@ -2062,9 +2262,13 @@ function _syncCtxIndicator(usage){
   const compressText=pct>=75?t('ctx_compress_action'):(pct>=50?t('ctx_compress_hint'):'');
   if(compressWrap) compressWrap.style.display=compressText?'':'none';
   _setCtxCompressButton(compressBtn,compressText);
+  const cacheTotalTok=cacheReadTok+cacheWriteTok;
+  const cacheHitPct=cacheTotalTok?Math.round((cacheReadTok/cacheTotalTok)*100):null;
+  const cacheText=cacheTotalTok?`cache: ${cacheHitPct}% hit (${_fmtTokens(cacheReadTok)} read / ${_fmtTokens(cacheWriteTok)} write)`:'';
   let label=hasPromptTok?`Context window ${pct}% used`:`${_fmtTokens(totalTok)} tokens used`;
   if(!hasExplicitCtx&&hasPromptTok) label+=' (est. 128K)';
   if(cost) label+=` \u00b7 $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+  if(cacheText) label+=` \u00b7 ${cacheText}`;
   el.setAttribute('aria-label',label);
   const usageText=hasPromptTok?(overflowed?`${rawPct}% used (context exceeded)`:`${pct}% used (${100-pct}% left)`):`${_fmtTokens(totalTok)} tokens used`;
   const tokensText=hasPromptTok?`${_fmtTokens(promptTok)} / ${_fmtTokens(ctxWindow)} tokens used`:`In: ${_fmtTokens(usage.input_tokens||0)} \u00b7 Out: ${_fmtTokens(usage.output_tokens||0)}`;
@@ -2086,6 +2290,11 @@ function _syncCtxIndicator(usage){
   if(costLine){
     if(cost){
       costText=`Estimated cost: $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+      if(cacheText) costText+=` \u00b7 ${cacheText}`;
+      costLine.style.display='';
+      costLine.textContent=costText;
+    }else if(cacheText){
+      costText=cacheText;
       costLine.style.display='';
       costLine.textContent=costText;
     }else{
@@ -2480,7 +2689,7 @@ function renderMd(raw){
   s=s.replace(/\\\[([\s\S]+?)\\\]/g,(_,m)=>{math_stash.push({type:'display',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
   // Inline math: $...$ — require non-space at boundaries to avoid false positives
   // e.g. "costs $5 and $10" should not trigger (space after opening $)
-  s=s.replace(/\$([^\s$\n][^$\n]*?[^\s$\n]|\S)\$/g,(_,m)=>{math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
+  s=s.replace(/\$([^\s$\n][^$\n]*?[^\s$\n]|\S)\$/g,(_,m)=>{if(m.includes(' | '))return '\$'+m+'\$';math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
   // Also stash \(...\) LaTeX delimiters.
   // Match a single literal backslash before the delimiter (the common LLM form).
   s=s.replace(/\\\((.+?)\\\)/g,(_,m)=>{math_stash.push({type:'inline',src:m});return '\x00M'+(math_stash.length-1)+'\x00';});
@@ -2610,11 +2819,26 @@ function renderMd(raw){
     if(rows.length<2)return block;
     const isSep=r=>/^\|[\s|:-]+\|$/.test(r.trim());
     if(!isSep(rows[1]))return block;
-    const parseRow=r=>r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<td>${inlineMd(c.trim())}</td>`).join('');
-    const parseHeader=r=>r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<th>${inlineMd(c.trim())}</th>`).join('');
+    // _protectPipes: temporarily swap pipes inside matching bracket pairs for a
+    // sentinel before split('|'), then restore. Iterates until no more matches
+    // so all pipes inside one pair are caught.
+    // Note: both opening and closing brace literals in the character classes
+    // are written as hex escapes (\x7b and \x7d) so the JS source contains no
+    // bare brace glyphs that would confuse the brace-counting extractFunc in
+    // tests/test_renderer_js_behaviour.py. Regex semantics are identical.
+    // Bracket set is paren / square / curly only -- NOT angle brackets, since
+    // angle brackets are overwhelmingly comparison operators in real LLM table
+    // output (`| x < 5 | y > 10 |`) and treating them as a pair collapses cells.
+    const _protectPipes=r=>{let prev;do{prev=r;r=r.replace(/([([\x7b][^)\]\x7d]*)[|]([^)\]\x7d]*[)\]\x7d])/g,(_,a,b)=>a+'\x00PIPE\x00'+b);}while(r!==prev);return r;};
+    const _restorePipes=s=>s.replace(/\x00PIPE\x00/g,'|');
+    const parseRow=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<td>${inlineMd(_restorePipes(c.trim()))}</td>`).join('');};
+    const parseHeader=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<th>${inlineMd(_restorePipes(c.trim()))}</th>`).join('');};
     const header=`<tr>${parseHeader(rows[0])}</tr>`;
     const body=rows.slice(2).map(r=>`<tr>${parseRow(r)}</tr>`).join('');
-    return `<table><thead>${header}</thead><tbody>${body}</tbody></table>`;
+    // Surround with blank lines so the final paragraph splitter treats the
+    // generated table as its own block even when the regex consumes one of the
+    // markdown block's trailing newlines.
+    return `\n\n<table><thead>${header}</thead><tbody>${body}</tbody></table>\n\n`;
   });
   // #487: Outer image pass — handles ![alt](url) in plain paragraphs (outside tables/lists).
   // Runs AFTER the table pass (images in table cells are handled by inlineMd() above).
@@ -2757,7 +2981,7 @@ function renderMd(raw){
     return '\x00E'+(_pre_stash.length-1)+'\x00';
   });
   const parts=s.split(/\n{2,}/);
-  s=parts.map(p=>{p=p.trim();if(!p)return '';if(/^<(h[1-6]|ul|ol|pre|hr|blockquote)|^\x00[EQ]/.test(p))return p;return `<p>${p.replace(/\n/g,'<br>')}</p>`;}).join('\n');
+  s=parts.map(p=>{p=p.trim();if(!p)return '';if(/^<(h[1-6]|ul|ol|table|pre|hr|blockquote)|^\x00[EQ]/.test(p))return p;return `<p>${p.replace(/\n/g,'<br>')}</p>`;}).join('\n');
   s=s.replace(/\x00E(\d+)\x00/g,(_,i)=>_pre_stash[+i]);
   // ── Restore MEDIA stash → inline images or download links ─────────────────
   s=s.replace(/\x00D(\d+)\x00/g,(_,i)=>{
@@ -3560,6 +3784,19 @@ function copyMsg(btn){
     setTimeout(()=>{btn.innerHTML=orig;btn.style.color='';},1500);
   }).catch(()=>showToast(t('copy_failed')));
 }
+function _copyThinkingText(btn){
+  const card=btn&&btn.closest?btn.closest('.thinking-card'):null;
+  if(!card)return;
+  const pre=card.querySelector('.thinking-card-body pre');
+  const text=pre?pre.textContent:'';
+  if(!text)return;
+  _copyText(text).then(()=>{
+    const orig=btn.innerHTML;
+    btn.innerHTML=li('check',12);
+    btn.style.color='var(--accent)';
+    setTimeout(()=>{btn.innerHTML=orig;btn.style.color='';},1500);
+  }).catch(()=>showToast(t('copy_failed')));
+}
 
 // ── TTS: Text-to-Speech via Web Speech API (#499) ──
 // Strips markdown, code blocks, and MEDIA: paths for clean speech output.
@@ -3715,6 +3952,67 @@ function clearInflightState(sid){
     if(Object.keys(all).length) localStorage.setItem(INFLIGHT_STATE_KEY, JSON.stringify(all));
     else localStorage.removeItem(INFLIGHT_STATE_KEY);
   }catch(_){ }
+}
+
+function snapshotLiveTurnHtmlForSession(sid){
+  // Keep the DOM snapshot memory-only. Persisted INFLIGHT state intentionally
+  // stores structured stream state, not outerHTML, so a hard reload still uses
+  // the safer flat replay path instead of reviving stale nodes/listeners.
+  if(!sid||!INFLIGHT[sid]) return;
+  const turn=$('liveAssistantTurn');
+  if(!turn) return;
+  if(turn.dataset&&turn.dataset.sessionId&&turn.dataset.sessionId!==sid) return;
+  INFLIGHT[sid].liveTurnHtml=turn.outerHTML;
+}
+
+function _liveAssistantSegmentTextLength(seg){
+  if(!seg) return 0;
+  const body=seg.querySelector('.msg-body')||seg;
+  return String(body.textContent||'').trim().length;
+}
+
+function _mergeRestoredLiveAssistantSegment(restored, existing){
+  if(!restored||!existing) return;
+  const existingLive=existing.querySelector('[data-live-assistant="1"]');
+  if(!existingLive) return;
+  const restoredLive=restored.querySelector('[data-live-assistant="1"]');
+  const existingLen=_liveAssistantSegmentTextLength(existingLive);
+  const restoredLen=_liveAssistantSegmentTextLength(restoredLive);
+  if(existingLen<=restoredLen) return;
+  const replacement=existingLive.cloneNode(true);
+  if(restoredLive){
+    restoredLive.replaceWith(replacement);
+    return;
+  }
+  const blocks=_assistantTurnBlocks(restored);
+  if(!blocks) return;
+  const anchor=Array.from(blocks.children).filter(el=>
+    el.matches('.tool-call-group,.tool-card-row,.agent-activity-thinking,.thinking-card-row,[data-live-assistant="1"]')
+  ).pop();
+  if(anchor) anchor.insertAdjacentElement('afterend', replacement);
+  else blocks.appendChild(replacement);
+}
+
+function restoreLiveTurnHtmlForSession(sid){
+  const inflight=INFLIGHT[sid];
+  if(!sid||!inflight||!inflight.liveTurnHtml) return false;
+  const inner=$('msgInner');
+  if(!inner) return false;
+  const template=document.createElement('template');
+  template.innerHTML=String(inflight.liveTurnHtml||'').trim();
+  const restored=template.content.firstElementChild;
+  if(!restored) return false;
+  restored.id='liveAssistantTurn';
+  if(S.session) restored.dataset.sessionId=S.session.session_id;
+  const existing=$('liveAssistantTurn');
+  _mergeRestoredLiveAssistantSegment(restored, existing);
+  if(existing) existing.replaceWith(restored);
+  else inner.appendChild(restored);
+  const liveGroup=restored.querySelector('.tool-call-group[data-live-tool-call-group="1"]');
+  if(liveGroup&&typeof _startActivityElapsedTimer==='function') _startActivityElapsedTimer(liveGroup);
+  if(typeof placeLiveToolCardsHost==='function') placeLiveToolCardsHost();
+  requestAnimationFrame(()=>postProcessRenderedMessages(restored));
+  return true;
 }
 
 function markInflight(sid, streamId) {
@@ -3923,8 +4221,11 @@ async function refreshSession() {
 // ── Update banner ──
 function _formatUpdateTargetStatus(label,info){
   if(!info||!(info.behind>0)) return null;
-  const branch=info.branch?` (${info.branch})`:'';
-  return `${label}${branch}: ${info.behind} update${info.behind>1?'s':''}`;
+  const release=(info.release_based&&info.latest_version)
+    ?` (${info.current_version||'unknown'} -> ${info.latest_version})`
+    :(info.branch?` (${info.branch})`:'');
+  const noun=info.release_based?'release':'update';
+  return `${label}${release}: ${info.behind} ${noun}${info.behind>1?'s':''}`;
 }
 function _isSafeUpdateCompareUrl(url){
   if(!url||!/^https?:\/\//i.test(url)) return false;
@@ -4441,13 +4742,16 @@ function syncTopbar(){
       // default rather than silently retaining the previous chat's selection (#1771).
       if(!applied){
         const deferModelCorrection=Boolean(S.session._modelResolutionDeferred);
+        const missingModelIsRoutable=_providerDefersMissingModelFallback(S.session.model_provider||window._activeProvider||null);
         // Also defer if a live model fetch is still in flight — the model may be
         // in the list once the fetch completes. Persisting now would corrupt the
         // session with the wrong model before live models arrive (#1169).
         const liveStillPending=window._activeProvider&&_liveModelFetchPending.has(window._activeProvider);
-        if(liveStillPending){
+        if(liveStillPending||missingModelIsRoutable){
           // Live fetch in flight — don't touch sel.value or S.session.model yet.
           // _addLiveModelsToSelect() will re-apply S.session.model once done (#1169).
+          // Named custom providers/OpenRouter can also route vendor-prefixed IDs
+          // outside the static catalog, so preserve the user's explicit choice.
         } else {
           const fallback=_applySessionModelFallback(modelSel);
           if(fallback&&!deferModelCorrection){
@@ -4537,23 +4841,26 @@ function _createAssistantTurn(tsTitle='', tpsText=''){
   const row=document.createElement('div');
   row.className='msg-row assistant-turn';
   row.dataset.role='assistant';
+  if(S.session) row.dataset.sessionId=S.session.session_id;
   row.innerHTML=`${_assistantRoleHtml(tsTitle, tpsText)}<div class="assistant-turn-blocks"></div>`;
   return row;
 }
 function _assistantTurnBlocks(turn){
   return turn?turn.querySelector('.assistant-turn-blocks'):null;
 }
-function _thinkingCardHtml(text){
+function _thinkingCardHtml(text, open){
   const clean=_sanitizeThinkingDisplayText(text);
-  return `<div class="thinking-card"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-toggle">${li('chevron-right',12)}</span></div><div class="thinking-card-body"><pre>${esc(clean)}</pre></div></div>`;
+  const copyBtn=`<button class="thinking-copy-btn" onclick="event.stopPropagation();_copyThinkingText(this)" title="${t('copy')}" aria-label="${t('copy')}">${li('copy',12)}</button>`;
+  const classes=`thinking-card${open?' open':''}`;
+  return `<div class="${classes}"><div class="thinking-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="thinking-card-icon">${li('lightbulb',14)}</span><span class="thinking-card-label">${t('thinking')}</span><span class="thinking-card-btn-row">${copyBtn}<span class="thinking-card-toggle">${li('chevron-right',12)}</span></span></div><div class="thinking-card-body"><pre>${esc(clean)}</pre></div></div>`;
 }
 function isSimplifiedToolCalling(){
   return window._simplifiedToolCalling!==false;
 }
-function _thinkingActivityNode(text){
+function _thinkingActivityNode(text, open){
   const row=document.createElement('div');
   row.className='agent-activity-thinking';
-  row.innerHTML=_thinkingCardHtml(text);
+  row.innerHTML=_thinkingCardHtml(text, open);
   return row;
 }
 // ── Activity-group user expand intent (#1298) ──────────────────────────────
@@ -4618,7 +4925,7 @@ function ensureActivityGroup(inner, opts){
   if(!inner) return null;
   const live=!!opts.live;
   const activityKey=opts.activityKey||(live?_activityKeyForLiveTurn():null);
-  const selector=live?'.tool-call-group[data-live-tool-call-group="1"]':'.tool-call-group[data-agent-activity-group="1"]';
+  const selector=live?'.tool-call-group[data-live-tool-call-group="1"][data-live-activity-current="1"]':'.tool-call-group[data-agent-activity-group="1"]';
   let group=inner.querySelector(selector);
   if(!group){
     group=document.createElement('div');
@@ -4635,7 +4942,10 @@ function ensureActivityGroup(inner, opts){
     group.setAttribute('data-tool-call-group','1');
     group.setAttribute('data-agent-activity-group','1');
     if(activityKey) group.setAttribute('data-activity-disclosure-key',activityKey);
-    if(live) group.setAttribute('data-live-tool-call-group','1');
+    if(live){
+      group.setAttribute('data-live-tool-call-group','1');
+      group.setAttribute('data-live-activity-current','1');
+    }
     group.innerHTML=`<button type="button" class="tool-call-group-summary" aria-expanded="${collapsed?'false':'true'}" onclick="_toggleActivityGroup(this)"><span class="tool-call-group-chevron">${li('chevron-right',12)}</span><span class="tool-call-group-label">Activity</span><span class="tool-call-group-duration"></span></button><div class="tool-call-group-body"></div>`;
     const anchor=opts.anchor||null;
     if(anchor&&anchor.parentElement===inner) anchor.insertAdjacentElement('afterend', group);
@@ -4647,6 +4957,13 @@ function ensureActivityGroup(inner, opts){
   _syncToolCallGroupSummary(group);
   if(live) _startActivityElapsedTimer(group);
   return group;
+}
+function closeCurrentLiveActivityGroup(){
+  const turn=$('liveAssistantTurn');
+  if(!turn) return;
+  turn.querySelectorAll('.tool-call-group[data-live-tool-call-group="1"][data-live-activity-current="1"]').forEach(group=>{
+    group.removeAttribute('data-live-activity-current');
+  });
 }
 function _compressionStateForCurrentSession(){
   const state=window._compressionUi;
@@ -4660,6 +4977,7 @@ function isCompressionUiRunning(){
 }
 function clearCompressionUi(){
   window._compressionUi=null;
+  _clearCompressionElapsedTimer();
   _setCompressionSessionLock(null);
   renderCompressionUi();
 }
@@ -4668,8 +4986,14 @@ function setCompressionUi(state){
     clearCompressionUi();
     return;
   }
-  window._compressionUi={...state};
-  if(state.sessionId) _setCompressionSessionLock(state.sessionId);
+  const nextState={...state};
+  if(nextState.automatic&&nextState.phase==='running'&&!_compressionElapsedStartedAt(nextState)){
+    nextState.startedAt=Date.now()/1000;
+  }
+  window._compressionUi=nextState;
+  if(nextState.sessionId) _setCompressionSessionLock(nextState.sessionId);
+  if(nextState.automatic&&nextState.phase==='running') _startCompressionElapsedTimer();
+  else _clearCompressionElapsedTimer();
   renderCompressionUi();
 }
 function _compressionCardsHtml(state){
@@ -4735,19 +5059,44 @@ function _compressionCardsHtml(state){
     </div>
     ${referenceHtml}`;
 }
-function _autoCompressionCardsHtml(state){
+function _autoCompressionBaseDetail(state){
   const fallback='Context auto-compressed to continue the conversation';
-  const detail=String(state.message||fallback).trim()||fallback;
-  const preview=String(state.summary?.headline||detail).trim()||detail;
+  const running=state&&state.phase==='running';
+  return running
+    ? (String(state.message||'Auto-compressing context...').trim()||'Auto-compressing context...')
+    : (String(state&&state.message||fallback).trim()||fallback);
+}
+function _autoCompressionPreviewText(state){
+  const running=state&&state.phase==='running';
+  const detail=_autoCompressionBaseDetail(state);
+  if(!running) return (String(state&&state.summary?.headline||detail).trim()||detail);
+  const elapsedLabel=_compressionElapsedLabel(state);
+  return [detail, elapsedLabel].filter(Boolean).join(' · ');
+}
+function _autoCompressionDetailText(state){
+  const running=state&&state.phase==='running';
+  const base=_autoCompressionBaseDetail(state);
+  const elapsedLabel=running?_compressionElapsedLabel(state):'';
+  if(running)return elapsedLabel?`Elapsed: ${elapsedLabel}`:base;
+  const continuation=String(state&&state.continuationSessionId||'').trim();
+  const handoff=continuation?`Continued in compressed session: ${continuation}`:'';
+  return [base,handoff].filter(Boolean).join('\n');
+}
+function _autoCompressionCardsHtml(state){
+  const running=state&&state.phase==='running';
+  const preview=_autoCompressionPreviewText(state);
+  const cardDetail=_autoCompressionDetailText(state);
   return `
     <div class="tool-card-row compression-card-row" data-compression-card="1">
       ${_compressionStatusCardHtml({
         statusLabel: t('auto_compress_label'),
         previewText: preview,
-        detail,
-        icon: li('check',13),
-        open: false,
-        variantClass: 'tool-card-compress-complete tool-card-compress-auto',
+        detail: cardDetail,
+        icon: running ? '<span class="tool-card-running-dot"></span>' : li('check',13),
+        open: running,
+        variantClass: running
+          ? 'tool-card-compress-running tool-card-compress-auto'
+          : 'tool-card-compress-complete tool-card-compress-auto',
       })}
     </div>`;
 }
@@ -4756,6 +5105,33 @@ function _compressionCardsNode(state){
   wrap.className='compression-turn';
   wrap.innerHTML=`<div class="compression-turn-blocks">${_compressionCardsHtml(state)}</div>`;
   return wrap;
+}
+function appendLiveCompressionCard(state){
+  if(!S.session||!S.activeStreamId||!state) return false;
+  let turn=$('liveAssistantTurn');
+  if(!turn){
+    turn=_createAssistantTurn();
+    turn.id='liveAssistantTurn';
+    if(S.session) turn.dataset.sessionId=S.session.session_id;
+    $('msgInner').appendChild(turn);
+  }
+  const inner=_assistantTurnBlocks(turn);
+  if(!inner) return false;
+  closeCurrentLiveActivityGroup();
+  const node=_compressionCardsNode(state);
+  if(!node) return false;
+  node.setAttribute('data-live-compression-card','1');
+  if(state.automatic&&state.phase==='running'){
+    const started=_compressionElapsedStartedAt(state)||Date.now()/1000;
+    node.setAttribute('data-compression-started-at',String(started));
+    node.setAttribute('data-compression-message',String(state.message||'Auto-compressing context...'));
+    _startCompressionElapsedTimer();
+  }
+  const existing=inner.querySelector('[data-live-compression-card="1"]');
+  if(existing) existing.replaceWith(node);
+  else inner.appendChild(node);
+  if(typeof scrollIfPinned==='function') scrollIfPinned();
+  return true;
 }
 function _isHandoffSummaryToolPayload(value){
   if(!value||typeof value!=='object'||Array.isArray(value)) return false;
@@ -5684,7 +6060,7 @@ function renderMessages(options){
     if(derived.length) S.toolCalls=derived;
   }
   if(!S.busy){
-    inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card])').forEach(el=>el.remove());
+    inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card]),.agent-activity-thinking:not([data-live-thinking="1"])').forEach(el=>el.remove());
     const byAssistant = {};
     for(const tc of (S.toolCalls||[])){
       const key = tc.assistant_msg_idx !== undefined ? tc.assistant_msg_idx : -1;
@@ -5705,14 +6081,18 @@ function renderMessages(options){
         }
         if(!anchorRow) continue;
         const anchorParent=anchorRow.parentElement;
-        const insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
+        let insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
+        const thinkingText=assistantThinking.get(aIdx);
+        if(thinkingText){
+          const thinkingNode=_thinkingActivityNode(thinkingText, false);
+          anchorParent.insertBefore(thinkingNode, anchorRow);
+        }
+        if(!cards.length) continue;
         const group=ensureActivityGroup(anchorParent,{collapsed:true,anchor:insertAfterNode,activityKey:`assistant:${aIdx}`});
         const sourceMsg=S.messages[aIdx]||{};
         if(sourceMsg._turnDuration!==undefined) group.setAttribute('data-turn-duration', String(sourceMsg._turnDuration));
         const body=group&&group.querySelector('.tool-call-group-body');
         if(!body) continue;
-        const thinkingText=assistantThinking.get(aIdx);
-        if(thinkingText) body.appendChild(_thinkingActivityNode(thinkingText));
         for(const tc of cards){
           body.appendChild(buildToolCard(tc));
         }
@@ -5818,8 +6198,12 @@ function renderMessages(options){
         const inTok=msg._turnUsage.input_tokens||0;
         const outTok=msg._turnUsage.output_tokens||0;
         const cost=msg._turnUsage.estimated_cost;
+        const cacheRead=msg._turnUsage.cache_read_tokens||0;
+        const cacheWrite=msg._turnUsage.cache_write_tokens||0;
         let text=`${_fmtTokens(inTok)} in · ${_fmtTokens(outTok)} out`;
         if(cost) text+=` · ~$${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
+        const cacheTotal=cacheRead+cacheWrite;
+        if(cacheTotal) text+=` · cache ${Math.round((cacheRead/cacheTotal)*100)}% hit`;
         usage.textContent=text;
         fragments.push(usage);
       }
@@ -6805,16 +7189,17 @@ function finalizeThinkingCard(){
       const summary=group.querySelector('.tool-call-group-summary');
       if(summary) summary.setAttribute('aria-expanded','false');
     }
-    const active=group.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
+    const active=turn.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
     if(active) active.removeAttribute('data-thinking-active');
     _syncToolCallGroupSummary(group);
   }
 }
-function appendThinking(text=''){
+function appendThinking(text='', options){
   // Guard: ignore if session was switched during an async SSE stream.
   // The old stream's reasoning events can still fire after switch;
   // without this check they would pollute the new session's DOM.
-  if(!S.session||!S.activeStreamId) return;
+  const allowPendingPlaceholder=!!(options&&options.pending===true);
+  if(!S.session||(!S.activeStreamId&&!allowPendingPlaceholder)) return;
   $('emptyState').style.display='none';
   let turn=$('liveAssistantTurn');
   if(!turn){
@@ -6857,31 +7242,30 @@ function appendThinking(text=''){
     }
     return;
   }
-  if(!String(text||'').trim()){
-    scrollIfPinned();
-    return;
-  }
-  const allChildren=Array.from(blocks.children);
-  const anchor=allChildren.filter(el=>
-    el.id!=='toolRunningRow' &&
-    el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')
-  ).pop();
-  const group=ensureActivityGroup(blocks,{live:true,collapsed:true,anchor,activityKey:_activityKeyForLiveTurn()});
-  const body=group&&group.querySelector('.tool-call-group-body');
-  if(!body) return;
-  let row=body.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
+  const thinkingText=String(text||'').trim()||'Thinking…';
+  let row=blocks.querySelector('.agent-activity-thinking[data-thinking-active="1"]');
   if(!row){
-    row=document.createElement('div');
-    row.className='agent-activity-thinking';
-    row.setAttribute('data-thinking-active','1');
-    body.insertBefore(row, body.firstChild);
+    const thinkingCards=Array.from(blocks.querySelectorAll('.agent-activity-thinking'));
+    row=thinkingCards.filter(el=>el.closest('.assistant-turn-blocks')===blocks).pop()||null;
+    if(row) row.setAttribute('data-thinking-active','1');
   }
-  _renderThinkingInto(row,text);
-  _syncToolCallGroupSummary(group);
+  if(!row){
+    row=_thinkingActivityNode(thinkingText, false);
+    row.setAttribute('data-thinking-active','1');
+    const allChildren=Array.from(blocks.children);
+    const anchor=allChildren.filter(el=>
+      el.id!=='toolRunningRow' &&
+      el.matches('[data-live-assistant="1"],.tool-call-group,.tool-card-row,.agent-activity-thinking')
+    ).pop();
+    if(anchor) anchor.insertAdjacentElement('afterend', row);
+    else blocks.appendChild(row);
+  }else{
+    _renderThinkingInto(row,thinkingText);
+  }
   scrollIfPinned();
   if(_scrollPinned){
-    const thinkingBody=row&&row.querySelector('.thinking-card-body');
-    if(thinkingBody) thinkingBody.scrollTop=thinkingBody.scrollHeight;
+    const body=row&&row.querySelector('.thinking-card-body');
+    if(body) body.scrollTop=body.scrollHeight;
   }
 }
 function updateThinking(text=''){appendThinking(text);}
@@ -7246,6 +7630,13 @@ function _renderTreeItems(container, entries, depth){
       const isExpanded=S._expandedDirs.has(item.path);
       arrow.textContent=isExpanded?'\u25BE':'\u25B8';
       el.appendChild(arrow);
+    }else{
+      // Keep file icons aligned with sibling directories that occupy this
+      // slot with the expand/collapse toggle. #2554
+      const spacer=document.createElement('span');
+      spacer.className='file-tree-toggle-placeholder';
+      spacer.setAttribute('aria-hidden','true');
+      el.appendChild(spacer);
     }
 
     // Icon
