@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **PR #2626** by @Michaelyklam (closes #2540) — Surface named custom-provider `/models` endpoint failures in the model picker instead of silently showing an empty provider group. `/api/models` now carries a per-provider `models_endpoint_error` hint for auth, network, and HTTP failures while preserving configured fallback models.
 
 ## [v0.51.95] — 2026-05-20 — Release BS (stage-388 — 5-PR batch — live tool callback event dedup + browser-only dashboard links + messaging transcript merge alignment + Geist Contrast skin + SSE runtime diagnostics)
 
