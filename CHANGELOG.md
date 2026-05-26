@@ -3,6 +3,24 @@
 
 ## [Unreleased]
 
+## [v0.51.138] — 2026-05-25 — Release DJ (stage-batch20 — 7-PR ultra-safe batch)
+
+### Added
+
+- **PR #2972** by @Michaelyklam (refs #1925) — Advance the runtime-adapter RFC after the Slice 4e route-selection harness shipped in v0.51.129. The RFC now defines the Slice 4f supervised local runner client backend gate: replace the bounded `runner-local` 501 only when explicitly configured, prove restart/reattach from durable runner/journal state, preserve the public chat-start field whitelist, require cancel as the first live runner-owned control, and keep active-run discovery/supervision out of new WebUI process-local runtime-surrogate globals.
+
+### Changed
+
+- Contributor guidance now requires explicit `Contract Routing` for contract-affecting PRs and `Contract Change` when a PR intentionally changes an existing product, runtime, or review contract. Contract tests must move with the corresponding docs instead of silently redefining behavior by themselves, with the current static coverage documented as advisory rather than a GitHub policy gate.
+- Removing a provider key now surfaces the server's specific CSRF rejection reason ("Session expired - reload the page", "Cross-origin mismatch - check reverse proxy headers", or the fallback "Cross-origin request rejected") when the underlying POST is rejected with 403, instead of swallowing all three into one generic toast. (Refs #2572)
+- Tool cards in the transcript now use a slightly stronger border and a 2px left edge so tool output stays visually distinct from final assistant prose without requiring hover. (#2867)
+- Tasks panel "Gateway not configured" banner now includes a direct link to the new `docs/docker.md#scheduled-jobs-and-the-gateway-daemon` section that walks through running the gateway container so scheduled cron jobs actually tick. (Refs #2785)
+- WebUI structured request logs now include `remote` (client IP) and an optional `forwarded_for` field when an `X-Forwarded-For` header is present, making failed-login and unauthorized-access logs usable by downstream security tooling like fail2ban behind a reverse proxy.
+
+### Internal
+
+- Test cleanup in `tests/test_issue1894_provider_overlap.py`: canonicalize the `opencode-go` base URL to `opencode.ai/zen/go/v1` (matching `hermes_cli/auth.py` and `api/config.py`), drop a vestigial `# noqa: N801`, and convert section banner comments to per-test docstrings.
+
 ## [v0.51.137] — 2026-05-25 — Release DI (stage-batch19 — 6-PR medium-risk batch)
 
 ### Added
