@@ -3,8 +3,6 @@
 
 ## [Unreleased]
 
-## [v0.51.153] — 2026-05-28 — Release DY (stage-batch35 — 11-PR low-risk cleanup: title-language + clarify SSE + upload filename + discoverability + SSE reconnect + gateway image + docker docs)
-
 ### Changed
 
 - Local fallback title generation no longer has a German-only `Session Bilder` special case; it now uses the same generic topic extraction path as other fallback titles. (Refs #3040)
@@ -20,6 +18,9 @@
 - Gateway-backed WebUI chat now forwards current-turn image attachments as OpenAI-style multimodal `image_url` parts when native image input is enabled, matching the legacy WebUI runtime's image handoff.
 - New chat sessions reset `_messagesTruncated` / `_oldestIdx` so a fresh conversation never displays the stale "Scroll up or click to load older messages" indicator inherited from a previously-paginated session.
 - `openai-codex` reasoning-effort resolution now lets the existing `models.dev` metadata pass set the supported levels (including `xhigh`) instead of being silently clipped through the Copilot model heuristic.
+
+
+- The third-party notes drawer’s “Recently used by AI” list now follows the provider-neutral WebUI-specific `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT` / `webui_prefill_messages_script` hook when configured, including argv-style hooks such as `[python3, /path/to/recall.py]` and command strings such as `python3 /path/to/recall.py`, before falling back to the legacy generic `prefill_messages_script`. Configured third-party notes sources such as Joplin, Obsidian, Notion, and llm-wiki remain visible even before runtime tool inventory hydrates.
 
 ### Documentation
 
