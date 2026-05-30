@@ -3,6 +3,13 @@
 
 ## [Unreleased]
 
+## [v0.51.179] — 2026-05-30 — Release EY (stage-batch61 — custom-provider reasoning efforts + clearer sidebar tooltips)
+
+### Fixed
+
+- Reasoning effort selector now appears for thinking-capable models served through custom API aggregators (New API, One API, etc.) that use non-standard model naming — bare names like `deepseek-v4-flash` or dot-separated `moonshotai.kimi-k2.5` rather than the OpenRouter-style `vendor/model` slash format. The heuristic now also strips a dot-vendor prefix and recognizes a `thinking`/`reasoning` token anywhere in the model name; plain non-reasoning models stay hidden as before (#3202).
+- Sidebar session row tooltips now explain the fork, prior-turn, child-session, and running/unread status badges, and hovering a truncated chat title shows the full title instead of the old "Double-click to rename" hint (#3203). The localized pending-approval/clarify attention tooltip retains precedence over the generic running/unread state tooltip on the status dot, and the fork tooltip keeps its localized "Forked from" base.
+
 ## [v0.51.178] — 2026-05-30 — Release EX (stage-batch60 — parallel sharded CI test runs)
 
 ### Changed
