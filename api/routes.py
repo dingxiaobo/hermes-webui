@@ -8107,6 +8107,7 @@ def _handle_media(handler, parsed):
         ".signing_key", ".pbkdf2_key", ".sessions.json",
         "google_token.json", "google_client_secret.json",
         "gateway_state.json", "channel_directory.json", "jobs.json",
+        "passkeys.json", ".passkey_challenges.json", ".login_attempts.json",
     }
     # Internal state subdirs that are sensitive in their entirety. NOTE:
     # `profiles` is intentionally NOT here — it is a container of profile roots,
