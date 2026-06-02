@@ -6,8 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
-import pytest
-
 
 def read(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
@@ -298,7 +296,7 @@ class TestDashboardPluginsEnforcement:
         import api.config as config
 
         original = config.load_settings()
-        original_plugins = original.get("dashboard_plugins", {})
+        assert isinstance(original, dict)
 
         with tempfile.TemporaryDirectory() as td:
             state_dir = Path(td) / "webui"
@@ -325,14 +323,18 @@ class TestPluginStaticServing:
     """Tests for plugin static file serving path traversal protection."""
 
     def test_plugins_route_restricted_to_plugin_css(self):
-        js = read("static/panels.js")
-        allowed = {"plugin.css"}
-        assert all(ext in js or True for ext in ["plugin.css"])
+        # The /plugins/ shared-asset route must allowlist plugin.css and guard
+        # against path traversal (resolve + relative_to).
+        routes = read("api/routes.py")
+        assert '"/plugins/"' in routes
+        assert "plugin.css" in routes
+        assert "relative_to" in routes
 
     def test_manifest_label_escaped_in_iife_shell(self):
-        js = read("static/panels.js")
-        iife_segment = js[js.find("html_content"):js.find("// ── Plugin pages")] if "html_content" in js else js
-        assert ".escape" in js or "esc(" in js or "html.escape" in js or True
+        # Manifest-supplied label/name/css must be HTML-escaped before being
+        # interpolated into the generated IIFE shell page (no injection).
+        routes = read("api/routes.py")
+        assert "html.escape(" in routes
 
 
 class TestPluginCollisionDetection:

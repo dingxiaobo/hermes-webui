@@ -12,11 +12,9 @@ Each plugin may have:
       style.css     -- optional plugin stylesheet
     plugin_api.py   -- optional backend API (not used in WebUI MVP)
 """
-import importlib
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
