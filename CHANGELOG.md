@@ -3,6 +3,11 @@
 
 ## [Unreleased]
 
+## [v0.51.242] — 2026-06-03 — Release HJ (stage-q14 — Graphite skin)
+
+### Added
+- New **Graphite** appearance skin — a quiet, neutral-gray "workbench" alternative to the default gold/cream, selectable from Settings → Appearance (and `/theme skin graphite`). All visual changes are scoped to `data-skin="graphite"` so the default appearance is unchanged; the skin ships both light and dark palettes built on the existing CSS-variable token system (no new dependency or build step). Tightens typography, shadows, active-sidebar spacing, and code-block framing, and uses a neutral gray palette rather than an olive-tinted one. (#3440, @t3chn0pr13st)
+
 ## [v0.51.241] — 2026-06-03 — Release HI (stage-q13 — New Chat returns to your unsent draft after visiting history)
 
 ### Fixed
