@@ -130,6 +130,14 @@ def test_gateway_tool_progress_event_translates_gateway_lifecycle_payloads():
             "tid": "call-1",
         },
     )
+    assert _gateway_tool_progress_event(
+        {"tool": "_thinking", "status": "running", "preview": "Thinking..."}
+    ) == (
+        "reasoning",
+        {
+            "text": "Thinking...",
+        },
+    )
     assert _gateway_tool_progress_event({"tool": "_thinking", "status": "running"}) is None
 
 
@@ -234,6 +242,8 @@ def test_gateway_chat_worker_translates_sse_and_persists_session(tmp_path, monke
             yield b'event: hermes.tool.progress\n'
             yield b'data: {"tool":"terminal","label":"terminal: pytest","toolCallId":"call-1","status":"running"}\n\n'
             yield b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
+            yield b'event: reasoning.available\n'
+            yield b'data: {"text":"Reasoning preview", "preview":"Reasoning preview"}\n\n'
             yield b'event: hermes.tool.progress\n'
             yield b'data: {"tool":"terminal","toolCallId":"call-1","status":"completed"}\n\n'
             yield b'data: {"choices":[{"delta":{"content":"lo"}}],"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\n'
@@ -324,6 +334,7 @@ def test_gateway_chat_worker_translates_sse_and_persists_session(tmp_path, monke
         "is_error": False,
         "tid": "call-1",
     }) in event_pairs
+    assert ("reasoning", {"text": "Reasoning preview"}) in event_pairs
     assert ("tool_complete", {
         "event_type": "tool.completed",
         "name": "terminal",
