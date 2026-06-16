@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.461] — 2026-06-16 — Release PV (custom-provider keys recognized from the pool)
+
+### Fixed
+
+- **Custom and aliased providers with credential-pool keys now show as configured (#4247).** Providers whose API keys live in the credential pool (added via `hermes auth add`) rather than env vars were reported unconfigured in the WebUI, so their models didn't appear. Provider detection now also consults the credential pool via `_has_explicit_pool_credentials()`, which filters the ambient `gh auth token` entry (so Copilot no longer falsely shows configured on any machine with `gh` installed) and is cache-routed to avoid the cold per-provider pool-load latency. Provider aliases (`glm`→`zai`, `github`→`copilot`, etc.) are resolved before loading the pool at every retrieval site, so detection and key-retrieval always read the same pool. Thanks @akrhin.
+
 ## [v0.51.460] — 2026-06-16 — Release PU (custom voice providers recognized)
 
 ### Fixed
