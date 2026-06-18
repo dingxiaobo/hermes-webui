@@ -82,3 +82,21 @@ def test_restore_checkpoint_skips_checkpoint_symlink_sources(tmp_path, monkeypat
         for p in workspace.rglob("*")
         if p.is_file()
     )
+
+
+def test_restore_checkpoint_reads_git_blob_after_worktree_symlink_swap(tmp_path, monkeypatch):
+    workspace, ckpt_dir, checkpoint = _init_checkpoint(tmp_path, monkeypatch)
+    _commit_checkpoint_file(ckpt_dir, "file.txt", "checkpoint blob content\n")
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("POST_COMMIT_SECRET_MARKER_SHOULD_NOT_COPY\n", encoding="utf-8")
+
+    (ckpt_dir / "file.txt").unlink()
+    os.symlink(secret, ckpt_dir / "file.txt")
+
+    result = rollback.restore_checkpoint(str(workspace), checkpoint)
+
+    assert result["files_restored"] == ["file.txt"]
+    assert (workspace / "file.txt").read_text(encoding="utf-8") == "checkpoint blob content\n"
+    assert "POST_COMMIT_SECRET_MARKER_SHOULD_NOT_COPY" not in (workspace / "file.txt").read_text(
+        encoding="utf-8"
+    )
