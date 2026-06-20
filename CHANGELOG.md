@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.531] — 2026-06-20 — Release SP (plugins panel: correct active-provider badge)
+
+### Fixed
+
+- **The Settings → Plugins panel now shows the green "Active provider" badge only on the provider that's actually selected (#4496).** Exclusive provider plugins (e.g. memory backends) all report `enabled: false` by design, so the panel couldn't tell the *selected* provider from its inactive siblings — it badged any exclusive plugin as the active provider. The payload now carries an `is_active_provider` signal (computed from the category's `<category>.provider` config) and the panel badges only the selected one; unselected exclusive providers render as "Disabled". Flat-key exclusive plugins (where the category can't be inferred) keep the older activation-based badge, so nothing regresses. Thanks @franksong2702.
+
 ## [v0.51.530] — 2026-06-20 — Release SO (fix /api/profiles 500)
 
 ### Fixed
