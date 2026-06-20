@@ -663,6 +663,20 @@ def _run_gateway_chat_streaming(
                         payload = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    _payload_event = str(payload.get("event") or payload.get("type") or sse_event).strip()
+                    if _payload_event in {"hermes.approval.request", "approval.request"}:
+                        approval_data = _gateway_runs_approval_event(payload)
+                        if approval_data:
+                            put_gateway_event("approval", approval_data)
+                            try:
+                                from api.route_approvals import submit_gateway_pending_mirror
+                                submit_gateway_pending_mirror(session_id, approval_data)
+                            except Exception:
+                                logger.debug("submit_gateway_pending_mirror failed", exc_info=True)
+                        else:
+                            logger.debug("Ignoring malformed gateway approval payload")
+                        sse_event = "message"
+                        continue
                     if sse_event == "hermes.tool.progress":
                         translated = _gateway_tool_progress_event(payload)
                         if translated:
@@ -700,18 +714,6 @@ def _run_gateway_chat_streaming(
                             if stream_id in STREAM_REASONING_TEXT:
                                 STREAM_REASONING_TEXT[stream_id] += reason_delta
                             put_gateway_event("reasoning", {"text": reason_delta})
-                        sse_event = "message"
-                        continue
-                    _payload_event = str(payload.get("event") or payload.get("type") or sse_event).strip()
-                    if _payload_event in {"hermes.approval.request", "approval.request"}:
-                        approval_data = _gateway_runs_approval_event(payload)
-                        if approval_data:
-                            put_gateway_event("approval", approval_data)
-                            try:
-                                from api.route_approvals import submit_gateway_pending_mirror
-                                submit_gateway_pending_mirror(session_id, approval_data)
-                            except Exception:
-                                logger.debug("submit_gateway_pending_mirror failed", exc_info=True)
                         sse_event = "message"
                         continue
                     last_payload = payload
