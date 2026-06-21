@@ -14507,13 +14507,14 @@ function _renderTreeItems(container, entries, depth){
         }
       };
     }else if(isExternalLink){
-      // Display-only: show the resolved target, do NOT call openFile.
-      // The read gate (safe_resolve_ws) blocks navigation through the link.
+      // Display-only: the link points outside the workspace. We do NOT disclose
+      // the resolved outside path (#4581 hardening) and do NOT call openFile —
+      // the read gate (safe_resolve_ws) blocks navigation through the link.
       el.onclick=async(e)=>{
         e.stopPropagation();
         await showConfirmDialog({
           title:item.name,
-          message:t('external_link_open_confirm').replace('{target}',()=>elideMiddle(item.target||'')),
+          message:t('external_link_open_confirm'),
           confirmLabel:t('dialog_confirm_btn'),
           danger:false,
           hideCancel:true,

@@ -23,7 +23,11 @@ def test_safe_resolve_blocks_external_symlink_directory(tmp_path):
     assert "escape" in entries
     assert entries["escape"]["type"] == "symlink"
     assert entries["escape"]["target_outside_workspace"] is True
-    assert entries["escape"]["is_dir"] is True
+    # #4581 hardening: display-only escape rows are uniformly is_dir=False — the
+    # target's real dir/file nature is target-derived metadata we don't disclose
+    # (the row is non-navigable regardless).
+    assert entries["escape"]["is_dir"] is False
+    assert "target" not in entries["escape"]
 
 
 def test_read_file_blocks_external_symlink_file(tmp_path):
@@ -335,7 +339,11 @@ def test_list_dir_outside_workspace_symlink_emitted_with_flag(tmp_path):
     assert entries["ext-link.txt"]["type"] == "symlink"
     assert entries["ext-link.txt"]["target_outside_workspace"] is True
     assert entries["ext-link.txt"]["is_dir"] is False
-    assert entries["ext-link.txt"]["target"] == str((outside / "file.txt").resolve())
+    # #4581 hardening: a display-only escape-target row must NOT disclose where it
+    # points — no resolved outside path, no target-derived size, no target-derived
+    # metadata. Only the link name/path + the display-only flag are emitted.
+    assert "target" not in entries["ext-link.txt"]
+    assert "size" not in entries["ext-link.txt"]
 
 
 def test_list_dir_external_symlink_blocked_system_path_unchanged(tmp_path):

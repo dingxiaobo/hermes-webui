@@ -72,7 +72,10 @@ class TestSymlinkCycleDetection:
         assert "ext" in entries
         assert entries["ext"]["type"] == "symlink"
         assert entries["ext"]["target_outside_workspace"] is True
-        assert entries["ext"]["is_dir"] is True
+        # #4581 hardening: display-only escape rows don't disclose target-derived
+        # metadata (is_dir/target), so an external dir symlink reports is_dir=False.
+        assert entries["ext"]["is_dir"] is False
+        assert "target" not in entries["ext"]
 
     def test_internal_symlink_listed_as_symlink(self, cleanup_test_sessions, tmp_path_factory):
         """Internal symlink dirs should appear with type='symlink', is_dir=True."""

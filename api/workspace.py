@@ -1232,26 +1232,42 @@ def list_dir(workspace: Path, rel: str='.'):
                 target_outside_workspace = True
             if _is_blocked_system_path(link_target):
                 return
-            is_dir = link_target.is_dir()
             display_path = name
             if rel and rel != '.':
                 display_path = rel + '/' + display_path
             mtime_ns = lstat_result.st_mtime_ns if lstat_result is not None else None
-            entry = {
-                'name': name,
-                'path': display_path,
-                'type': 'symlink',
-                'target': str(link_target),
-                'is_dir': is_dir,
-                'target_outside_workspace': target_outside_workspace,
-                'mtime_ns': mtime_ns,
-            }
-            if not is_dir:
-                try:
-                    entry['size'] = link_target.stat().st_size
-                except OSError:
-                    entry['size'] = None
-            entries.append(entry)
+            if target_outside_workspace:
+                # #4581 hardening: a display-only escape-target symlink must NOT
+                # disclose where it points. Emit ONLY display-safe fields — never
+                # the resolved outside path, target-derived is_dir, or target size
+                # (the row exists to show the link is present; navigation/read
+                # through it stays blocked by safe_resolve_ws/open_anchored_fd).
+                entry = {
+                    'name': name,
+                    'path': display_path,
+                    'type': 'symlink',
+                    'is_dir': False,
+                    'target_outside_workspace': True,
+                    'mtime_ns': mtime_ns,
+                }
+                entries.append(entry)
+            else:
+                is_dir = link_target.is_dir()
+                entry = {
+                    'name': name,
+                    'path': display_path,
+                    'type': 'symlink',
+                    'target': str(link_target),
+                    'is_dir': is_dir,
+                    'target_outside_workspace': False,
+                    'mtime_ns': mtime_ns,
+                }
+                if not is_dir:
+                    try:
+                        entry['size'] = link_target.stat().st_size
+                    except OSError:
+                        entry['size'] = None
+                entries.append(entry)
         else:
             entry_path = name
             if rel and rel != '.':
