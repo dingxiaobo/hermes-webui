@@ -3352,6 +3352,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       : _stripXmlToolCalls(assistantText.slice(segmentStart));
     if(_smdParser){
       _smdWrite(displayText);
+    } else if(window.smd){
+      // Parser was nulled out (e.g. by a prior segment end) but smd is
+      // available — recreate it on the existing element. Uses the non-fade
+      // renderer to match standard rendering, avoiding O(n²) innerHTML
+      // churn on long responses (#4704).
+      _smdNewParser(assistantBody, false);
+      if(_smdParser) _smdWrite(displayText);
     } else if(renderMd){
       assistantBody.innerHTML=renderMd(displayText);
     } else {
