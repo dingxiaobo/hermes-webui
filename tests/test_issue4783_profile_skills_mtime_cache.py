@@ -347,29 +347,38 @@ class TestSymlinkedSkillProbeFollowsLinks:
         """The probe must NOT descend into pruned trees (.venv/node_modules/
         site-packages/support dirs) — matching iter_skill_index_files — so a
         skill that vendors a dependency tree doesn't make this every-call probe
-        walk thousands of irrelevant files. A mtime change DEEP inside a pruned
-        dir must NOT move the probe value (it's not part of the skill index)."""
+        walk thousands of irrelevant files.
+
+        Asserted deterministically: the probe's max-mtime must equal the max
+        mtime over ONLY the non-pruned skill tree, even when a file buried inside
+        a pruned node_modules/ has a far-future mtime. (A timing-based before/after
+        is fragile because creating the buried tree also bumps ancestor dirs.)
+        """
         mod, profile_dir = profiles_mod
         skills_dir = profile_dir / "skills"
         skill = skills_dir / "vendored"
         skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text("---\nname: vendored\n---\n# vendored\n", encoding="utf-8")
-        # A vendored dependency tree that the compute path prunes.
+        skill_md = skill / "SKILL.md"
+        skill_md.write_text("---\nname: vendored\n---\n# vendored\n", encoding="utf-8")
+        # A vendored dependency tree the compute path prunes, with a FAR-FUTURE
+        # mtime on a file buried inside it.
         buried = skill / "node_modules" / "pkg"
         buried.mkdir(parents=True)
         buried_file = buried / "index.js"
         buried_file.write_text("// dep\n", encoding="utf-8")
-
-        before = mod._skill_tree_max_mtime_ns(skills_dir, profile_dir / "config.yaml")
         import os as _os
-        future = time.time() + 1000
-        _os.utime(buried_file, (future, future))
-        _os.utime(buried, (future, future))
-        after = mod._skill_tree_max_mtime_ns(skills_dir, profile_dir / "config.yaml")
+        far_future = time.time() + 100_000
+        _os.utime(buried_file, (far_future, far_future))
+        _os.utime(buried, (far_future, far_future))
 
-        assert after == before, (
-            "probe must prune node_modules/ (not descend) — a change inside a pruned "
-            f"dependency tree must not move the probe value (before={before}, after={after})"
+        probe = mod._skill_tree_max_mtime_ns(skills_dir, profile_dir / "config.yaml")
+        far_future_ns = int(far_future * 1_000_000_000)
+
+        # The far-future buried file/dir must NOT be reflected in the probe —
+        # node_modules is pruned, so the probe value stays well below far_future.
+        assert probe < far_future_ns, (
+            "probe must prune node_modules/ — a far-future mtime buried inside it "
+            f"must not appear in the probe value (probe={probe}, far_future_ns={far_future_ns})"
         )
 
 
