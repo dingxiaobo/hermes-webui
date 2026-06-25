@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 UI_JS = (Path(__file__).parent.parent / "static" / "ui.js").read_text(encoding="utf-8")
+SESSIONS_JS = (Path(__file__).parent.parent / "static" / "sessions.js").read_text(encoding="utf-8")
 
 
 def _slice_derived_rebuild() -> str:
@@ -77,3 +78,15 @@ def test_all_derived_result_snippet_reads_have_fallback():
             f"derived resultSnippet read missing the persisted fallback (#4927): {r}"
         )
 
+
+def test_loaded_session_tool_calls_persisted_onto_session():
+    """#4927 gate: the cold-load path must persist the messages=1 compact tool
+    summary onto S.session.tool_calls, or the renderMessages fallback source is
+    empty on exactly the cold-load path it repairs (loadSession keeps the
+    messages=0 object whose tool_calls is [])."""
+    start = SESSIONS_JS.index("function _syncToolCallsForLoadedMessages(")
+    region = SESSIONS_JS[start:start + 1500]
+    assert "S.session.tool_calls=sessionToolCalls" in region.replace(" ", ""), (
+        "_syncToolCallsForLoadedMessages must copy the loaded sessionToolCalls "
+        "onto S.session.tool_calls so the derived-rebuild fallback has a source"
+    )
