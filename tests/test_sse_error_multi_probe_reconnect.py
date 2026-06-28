@@ -35,6 +35,28 @@ def _compact(text: str) -> str:
     return "".join(text.split())
 
 
+def _reconnect_block(compact: str) -> str:
+    """Return the body of the `if(!_reconnectAttempted&&streamId){...}` block by
+    brace-matching from its opening brace to the matching close, rather than a
+    fixed character window (which could silently truncate — and so under-assert —
+    if future guard lines grow the block). greptile P2 on #5122.
+    """
+    marker = "if(!_reconnectAttempted&&streamId){"
+    start = compact.find(marker)
+    assert start != -1, "expected the reconnect block guarded by _reconnectAttempted"
+    i = start + len(marker) - 1  # position of the opening brace
+    depth = 0
+    for j in range(i, len(compact)):
+        c = compact[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return compact[start: j + 1]
+    raise AssertionError("unbalanced braces: reconnect block never closed")
+
+
 def test_staged_retry_delays_present():
     # Four escalating backoff stages replace the old single 1500ms probe.
     assert "_retryDelays=[1500,3000,5000,8000]" in _compact(MESSAGES_JS)
@@ -52,6 +74,20 @@ def test_first_probe_scheduled_from_retry_delays_head():
     # probe is gone.
     compact = _compact(MESSAGES_JS)
     assert "setTimeout(()=>{void_probeReconnect(0);},_retryDelays[0]);" in compact
+
+
+def test_stage_counter_starts_at_one():
+    # The very first status shown must read (1/N), not a bare "Reconnecting…"
+    # that then jumps to (2/4) — otherwise the counter appears to start at 2,
+    # which looks like a glitch. _retryDelays must be declared before the first
+    # setComposerStatus so (1/${_retryDelays.length}) is in scope. (greptile P2)
+    compact = _compact(MESSAGES_JS)
+    assert "setComposerStatus(`Reconnecting…(1/${_retryDelays.length})`);" in compact
+    # And the declaration precedes that first status call.
+    decl = compact.find("const_retryDelays=[1500,3000,5000,8000];")
+    first_status = compact.find("setComposerStatus(`Reconnecting…(1/${_retryDelays.length})`)")
+    assert decl != -1 and first_status != -1
+    assert decl < first_status
 
 
 def test_each_stage_requeries_stream_status():
@@ -77,10 +113,7 @@ def test_handle_stream_error_only_after_retry_window_exhausted():
     # across the whole window and the error is surfaced only once every stage
     # has failed. This is the exact ordering that prevents the premature
     # state-wipe / blank-then-restore flicker.
-    compact = _compact(MESSAGES_JS)
-    block_start = compact.find("if(!_reconnectAttempted&&streamId){")
-    assert block_start != -1, "expected the reconnect block guarded by _reconnectAttempted"
-    block = compact[block_start: block_start + 1600]
+    block = _reconnect_block(_compact(MESSAGES_JS))
 
     guard_idx = block.find("if(nextDelay){")
     assert guard_idx != -1, "expected the next-stage scheduling guard in the reconnect block"
@@ -96,15 +129,12 @@ def test_live_state_not_cleared_mid_window():
     # null the active stream id or clear inflight state before the retry window
     # is exhausted. We assert neither _clearOwnerInflightState() nor an
     # S.activeStreamId=null assignment appears inside the reconnect block body
-    # (those belong only in _handleStreamError, reached after the window).
-    compact = _compact(MESSAGES_JS)
-    block_start = compact.find("if(!_reconnectAttempted&&streamId){")
-    assert block_start != -1
-    # Body up to the block's own terminal _handleStreamError call.
-    body = compact[block_start: block_start + 1600]
-    end = body.find("_handleStreamError(source);")
+    # before its terminal _handleStreamError (those belong only in
+    # _handleStreamError, reached after the window).
+    block = _reconnect_block(_compact(MESSAGES_JS))
+    end = block.find("_handleStreamError(source);")
     assert end != -1
-    body = body[:end]
+    body = block[:end]
     assert "_clearOwnerInflightState()" not in body, (
         "reconnect window must not clear inflight state before all probes fail"
     )

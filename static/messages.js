@@ -5491,8 +5491,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       // during this retry window and only surface an error after all probes fail.
       if(!_reconnectAttempted && streamId){
         _reconnectAttempted=true;
-        setComposerStatus('Reconnecting…');
         const _retryDelays=[1500,3000,5000,8000];
+        setComposerStatus(`Reconnecting… (1/${_retryDelays.length})`);
         const _probeReconnect=async(attempt=0)=>{
           if(_terminalStateReached || _streamFinalized) return;
           if(!_isSessionCurrentPane(activeSid)) return;
