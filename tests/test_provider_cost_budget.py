@@ -364,3 +364,25 @@ def test_save_settings_rejects_huge_budget(monkeypatch, tmp_path):
     config.save_settings({"provider_cost_budget": 1e9})
     loaded = config.load_settings()
     assert loaded["provider_cost_budget"] == 50.0
+
+
+def test_save_settings_rejects_subcent_budget_after_rounding(monkeypatch, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"provider_cost_budget": 50.0}), encoding="utf-8")
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_path)
+    monkeypatch.setattr(config, "DEFAULT_WORKSPACE", tmp_path)
+    monkeypatch.setattr(config, "resolve_default_workspace", lambda x: tmp_path)
+
+    config.save_settings({"provider_cost_budget": 0.004})
+    loaded = config.load_settings()
+    assert loaded["provider_cost_budget"] == 50.0
+
+
+def test_get_provider_cost_budget_rejects_huge_manual_setting(monkeypatch, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"provider_cost_budget": 5e12}), encoding="utf-8")
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_path)
+
+    import api.providers as providers
+
+    assert providers._get_provider_cost_budget() is None

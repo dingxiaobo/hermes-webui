@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover - exercised only where fcntl is unavaila
 from api.config import (
     _PROVIDER_DISPLAY,
     _PROVIDER_MODELS,
+    _coerce_provider_cost_budget,
     _custom_provider_slug_from_name,
     _get_label_for_model,
     _models_from_live_provider_ids,
@@ -2055,14 +2056,9 @@ def _get_provider_cost_budget() -> float | None:
     try:
         from api.config import load_settings
         raw = load_settings().get("provider_cost_budget")
-        if raw is None:
-            return None
-        val = float(raw)
-        if val > 0 and __import__("math").isfinite(val):
-            return round(val, 2)
+        return _coerce_provider_cost_budget(raw)
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _cost_snapshots_dir() -> Path:

@@ -14,6 +14,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -7971,6 +7972,17 @@ _SETTINGS_WRITE_VERSION = 0
 _SETTINGS_WRITE_LOCK = __import__("threading").Lock()
 
 
+def _coerce_provider_cost_budget(value: Any) -> float | None:
+    """Normalize a monthly budget to the persisted two-decimal representation."""
+    try:
+        rounded = round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+    if not (0 < rounded < 1e9) or not math.isfinite(rounded):
+        return None
+    return rounded
+
+
 def save_settings(settings: dict) -> dict:
     """Save settings to disk. Returns the merged settings. Ignores unknown keys."""
     current = load_settings()
@@ -8062,13 +8074,10 @@ def save_settings(settings: dict) -> dict:
                 if v is None or v == "":
                     current[k] = None
                     continue
-                try:
-                    v = float(v)
-                except (TypeError, ValueError):
+                budget = _coerce_provider_cost_budget(v)
+                if budget is None:
                     continue
-                if not (0 < v < 1e9) or not __import__("math").isfinite(v):
-                    continue
-                current[k] = round(v, 2)
+                current[k] = budget
                 continue
             # Coerce bool keys
             if k in _SETTINGS_BOOL_KEYS:
