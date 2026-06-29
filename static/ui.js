@@ -3312,6 +3312,11 @@ function _initComposerFooterFit(){
     try{
       _composerFitResizeObserver=new ResizeObserver(_scheduleComposerFit);
       _composerFitResizeObserver.observe(footer);
+      // Also observe the left control group directly: the footer's outer width
+      // may not change when right-side controls (status/context chips) appear or
+      // resize, but that shrinks .composer-left's available room and must
+      // retrigger a refit. (Codex gate #4657.)
+      if(left && left!==footer){try{_composerFitResizeObserver.observe(left);}catch(_){ }}
     }catch(_){ }
   }
   if(window.MutationObserver){
