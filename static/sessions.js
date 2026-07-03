@@ -4595,6 +4595,7 @@ const _activeSessionExternalRefreshMs = 30000;
 let _streamingPollTimer = null;
 let _sessionTimeRefreshTimer = null;
 let _streamingPollVisibilityHandler = null;
+let _sessionTimeRefreshVisibilityHandler = null;
 let _activeSessionExternalRefreshTimer = null;
 let _activeSessionExternalRefreshInFlight = false;
 let _deferredActiveSessionExternalRefreshReason = '';
@@ -4646,11 +4647,17 @@ function stopStreamingPoll(){
 function ensureSessionTimeRefreshPoll(){
   if(_sessionTimeRefreshTimer) return;
   _sessionTimeRefreshTimer = setInterval(() => {
-    // Relative-time labels only matter when visible; the tab-shown refresh in
-    // startStreamingPoll re-renders the list (and its timestamps) on return.
+    // Relative-time labels only matter when visible; the visibilitychange
+    // handler below refreshes timestamps immediately when the tab is shown.
     if(typeof document !== 'undefined' && document.hidden) return;
     renderSessionListFromCache();
   }, _sessionTimeRefreshMs);
+  if(typeof document !== 'undefined' && !_sessionTimeRefreshVisibilityHandler){
+    _sessionTimeRefreshVisibilityHandler = () => {
+      if(!document.hidden) renderSessionListFromCache();
+    };
+    document.addEventListener('visibilitychange', _sessionTimeRefreshVisibilityHandler);
+  }
 }
 
 function _deferActiveSessionExternalRefresh(reason){
