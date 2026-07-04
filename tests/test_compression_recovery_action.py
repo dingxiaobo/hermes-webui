@@ -390,6 +390,33 @@ def test_recovery_child_markers_round_trip_through_state_db_sidecar_rebuild(tmp_
     assert sidecar["compression_recovery_action"] == "start_focused_continuation"
 
 
+def test_recovery_source_metadata_round_trips_through_state_db_sidecar_rebuild(tmp_path):
+    recovery = {
+        "type": "compression_recovery_required",
+        "terminal_state": "compression_exhausted",
+        "recommended_action": "start_focused_continuation",
+        "source_session_id": "recoverysrc4",
+    }
+    db = WebUIJsonSessionDB(tmp_path)
+    db.write_session(
+        {
+            "session_id": "recoverysrc4",
+            "title": "Exhausted source",
+            "model": "gpt-4o",
+            "started_at": 1700000000,
+            "messages": [{"role": "user", "content": "long task"}],
+            "compression_recovery": recovery,
+            "recommended_recovery_action": "start_focused_continuation",
+        }
+    )
+    row = db.list_sessions()[0]
+
+    sidecar = _state_db_row_to_sidecar({"id": "recoverysrc4", **row, "messages": []})
+
+    assert sidecar["compression_recovery"] == recovery
+    assert sidecar["recommended_recovery_action"] == "start_focused_continuation"
+
+
 def test_compression_recovery_ui_wires_card_action_and_send_intercept():
     ui = (ROOT / "static/ui.js").read_text(encoding="utf-8")
     messages = (ROOT / "static/messages.js").read_text(encoding="utf-8")
