@@ -11998,13 +11998,17 @@ def handle_get(handler, parsed) -> bool:
             _t5 = _time.monotonic()
             resp = j(handler, {"session": redact})
             _t6 = _time.monotonic()
-            if _debug_slow:
+            _total_ms = (_t6 - _t0) * 1000
+            # Always log when slow (>2s) so we don't need HERMES_DEBUG_SLOW env var
+            # to diagnose latency regressions. Opt-in env var still forces
+            # logging on every request for development.
+            if _debug_slow or _total_ms >= 2000:
                 logger.warning(
                     "[SLOW] session_id=%s get_session=%.1fms model_resolve=%.1fms "
                     "compact=%.1fms redact=%.1fms json_write=%.1fms total=%.1fms",
                     sid,
                     (_t2-_t1)*1000, (_t3-_t2)*1000, (_t4-_t3)*1000,
-                    (_t5-_t4)*1000, (_t6-_t5)*1000, (_t6-_t0)*1000,
+                    (_t5-_t4)*1000, (_t6-_t5)*1000, _total_ms,
                 )
             return resp
         except KeyError:
