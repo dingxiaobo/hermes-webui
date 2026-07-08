@@ -337,6 +337,11 @@ def test_process_wakeup_pause_revalidates_when_credential_state_changes(tmp_path
         lambda *_args, **_kwargs: ("test-model", "test-provider", False),
     )
     monkeypatch.setattr(routes, "_start_run", _fake_start_run)
+    monkeypatch.setattr(
+        routes,
+        "provider_has_usable_credential",
+        lambda provider_id, *, refresh=False: provider_id == "test-provider",
+    )
 
     response = routes.start_session_turn(
         session.session_id,
@@ -354,6 +359,63 @@ def test_process_wakeup_pause_revalidates_when_credential_state_changes(tmp_path
     saved = Session.load(session.session_id)
     assert saved is not None
     assert saved.process_wakeup_pause == {}
+
+
+def test_process_wakeup_pause_keeps_changed_credential_state_until_provider_is_usable(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"credential_pool": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(models, "_get_profile_home", lambda _profile: hermes_home)
+    session = Session(
+        session_id="wakeup_pause_credential_changed_still_unusable",
+        workspace=str(tmp_path),
+        model="test-model",
+        model_provider="test-provider",
+    )
+    pause = models.record_process_wakeup_provider_unavailable_pause(
+        session,
+        classification="credential_pool_empty",
+        model="test-model",
+        provider="test-provider",
+    )
+    assert pause is not None
+    paused_fingerprint = pause["credential_state_fingerprint"]
+    session.save()
+    models.SESSIONS[session.session_id] = session
+
+    auth_json.write_text(
+        '{"credential_pool": {"test-provider": [{"id": "refilled-token"}]}}\n',
+        encoding="utf-8",
+    )
+    changed_fingerprint = models.process_wakeup_credential_state_fingerprint(session)
+    assert changed_fingerprint != paused_fingerprint
+
+    def _unexpected_start_run(*_args, **_kwargs):
+        raise AssertionError("changed credential metadata must not clear until the provider is usable")
+
+    monkeypatch.setattr(routes, "_resolve_chat_workspace_with_recovery", lambda _s, _w: str(tmp_path))
+    monkeypatch.setattr(routes, "_read_profile_model_config", lambda _s, _p: (None, None, {}))
+    monkeypatch.setattr(
+        routes,
+        "_resolve_compatible_session_model_state",
+        lambda *_args, **_kwargs: ("test-model", "test-provider", False),
+    )
+    monkeypatch.setattr(routes, "_start_run", _unexpected_start_run)
+    monkeypatch.setattr(routes, "provider_has_usable_credential", lambda *_args, **_kwargs: False)
+
+    response = routes.start_session_turn(
+        session.session_id,
+        "[IMPORTANT: Background process completed after unusable credential metadata changed.]",
+        source="process_wakeup",
+    )
+
+    assert response["_status"] == 409
+    assert response["error"] == PROCESS_WAKEUP_PAUSE_ERROR
+    saved = Session.load(session.session_id)
+    assert saved is not None
+    assert saved.process_wakeup_pause["suppressed_count"] == 1
+    assert saved.process_wakeup_pause["credential_state_fingerprint"] == changed_fingerprint
 
 
 def test_process_wakeup_pause_survives_rotation_style_auth_rewrite(tmp_path, monkeypatch):

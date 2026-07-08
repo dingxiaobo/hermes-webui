@@ -8680,6 +8680,7 @@ from api.models import (
     clear_process_wakeup_pause,
     clear_process_wakeup_pause_if_model_changed,
     process_wakeup_pause_matches,
+    process_wakeup_credential_state_fingerprint,
     process_wakeup_pause_credential_state_changed,
     suppress_process_wakeup_for_provider_pause,
 )
@@ -19866,6 +19867,17 @@ def _process_wakeup_provider_has_usable_credential(session, *, model, provider) 
     return provider_has_usable_credential(provider_id, refresh=True)
 
 
+def _refresh_process_wakeup_pause_credential_fingerprint(session) -> bool:
+    """Refresh the stored credential fingerprint without clearing the pause."""
+    pause = getattr(session, "process_wakeup_pause", None)
+    if not isinstance(pause, dict) or not pause.get("paused"):
+        return False
+    updated = dict(pause)
+    updated["credential_state_fingerprint"] = process_wakeup_credential_state_fingerprint(session)
+    session.process_wakeup_pause = updated
+    return True
+
+
 def start_session_turn(
     session_id: str,
     message: str,
@@ -19949,16 +19961,15 @@ def start_session_turn(
             )
     _paused_wakeup = None
     if turn_source == "process_wakeup":
-        if process_wakeup_pause_credential_state_changed(s):
-            if clear_process_wakeup_pause(s, reason='credential_state_changed'):
-                try:
-                    s.save(touch_updated_at=False)
-                except Exception:
-                    logger.debug(
-                        "failed to persist process_wakeup credential-state reset for session %s",
-                        session_id,
-                        exc_info=True,
-                    )
+        _credential_state_changed = False
+        try:
+            _credential_state_changed = process_wakeup_pause_credential_state_changed(s)
+        except Exception:
+            logger.debug(
+                "failed to compare process_wakeup credential state for session %s",
+                session_id,
+                exc_info=True,
+            )
         if process_wakeup_pause_matches(
             s,
             model=model,
@@ -19979,12 +19990,27 @@ def start_session_turn(
                     exc_info=True,
                 )
             if _credential_recovered:
-                if clear_process_wakeup_pause(s, reason='credential_recovered'):
+                _recovery_reason = (
+                    'credential_state_changed'
+                    if _credential_state_changed
+                    else 'credential_recovered'
+                )
+                if clear_process_wakeup_pause(s, reason=_recovery_reason):
                     try:
                         s.save(touch_updated_at=False)
                     except Exception:
                         logger.debug(
                             "failed to persist process_wakeup credential recovery reset for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
+            elif _credential_state_changed:
+                if _refresh_process_wakeup_pause_credential_fingerprint(s):
+                    try:
+                        s.save(touch_updated_at=False)
+                    except Exception:
+                        logger.debug(
+                            "failed to persist process_wakeup credential-state fingerprint refresh for session %s",
                             session_id,
                             exc_info=True,
                         )
