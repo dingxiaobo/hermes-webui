@@ -13,7 +13,6 @@ glob. The critical property under test: a STABLE user with an unpromoted
 `exp-v*` tag ahead of them reports up-to-date, NOT the master firehose.
 """
 import subprocess
-from pathlib import Path
 
 import pytest
 
