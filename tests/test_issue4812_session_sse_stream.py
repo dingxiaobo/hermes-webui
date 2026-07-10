@@ -396,6 +396,60 @@ def test_session_route_resyncs_when_run_completes_inside_idle_wait(monkeypatch):
     assert stop["count"] == 1
 
 
+def test_session_route_baselines_journal_before_first_attach(monkeypatch):
+    """TOCTOU regression: the idle-wait fingerprint baseline must be captured BEFORE
+    the first live-attach lookup. If it were captured afterward, a run completing
+    during that first attach would fold into the baseline and be silently missed.
+    Assert the call ORDER: session_journal_fingerprint fires before the attach loop's
+    active-stream lookup, and a subsequent journal advance still emits a snapshot."""
+    import api.routes as routes
+
+    stop = _stop_after_first_heartbeat(monkeypatch)
+    monkeypatch.setattr(routes, "_session_id_visible_to_request_profile", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        routes,
+        "get_session",
+        lambda sid, metadata_only=False: SimpleNamespace(
+            session_id=sid,
+            compact=lambda **_kwargs: {"session_id": sid, "title": "Session"},
+        ),
+    )
+    order = []
+    fp_calls = {"n": 0}
+
+    def _active(*_a, **_k):
+        order.append("attach")
+        return None
+
+    def _fp(*_a, **_k):
+        fp_calls["n"] += 1
+        order.append("fp")
+        # First fp call = pre-attach baseline (old); any later call = advanced.
+        return (0, 0.0, 0) if fp_calls["n"] == 1 else (1, 123.0, 42)
+
+    monkeypatch.setattr(routes, "_active_run_stream_for_session", _active)
+    monkeypatch.setattr(routes, "read_session_run_events", lambda *_a, **_k: {"status": "ok", "events": []})
+    monkeypatch.setattr(routes, "session_journal_fingerprint", _fp)
+
+    handler = _FakeHandler()
+    routes._handle_session_sse_stream_for_session(
+        handler,
+        urlparse("/api/sessions/session_1/events"),
+        "session_1",
+    )
+
+    body = handler.wfile.getvalue().decode("utf-8")
+    # The baseline fp must precede the FIRST in-loop attach that follows it. Concretely:
+    # the first fp call happens before the attach-lookup that enters the idle wait.
+    assert "fp" in order, "the idle path must baseline the journal fingerprint"
+    first_fp = order.index("fp")
+    # There must be an attach recorded AFTER the baseline (the loop attach) and the
+    # subsequent advance must surface as a snapshot re-sync.
+    assert "attach" in order[first_fp:], "an attach must follow the baseline in the idle loop"
+    assert body.count("event: session_snapshot\n") == 1, "a journal advance after baseline must emit one re-sync"
+    assert stop["count"] == 1
+
+
 def test_session_route_no_resync_when_idle_journal_unchanged(monkeypatch):
     """The idle-wait re-sync must fire ONLY on a genuine journal advance — a quiet
     idle connection (fingerprint unchanged) must NOT spam snapshots every tick."""

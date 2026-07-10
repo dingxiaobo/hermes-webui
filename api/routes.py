@@ -16934,24 +16934,27 @@ def _handle_session_run_journal_stream_for_session(handler, parsed, session_id):
             else:
                 replay_ok = True
                 replay_events = replay.get("events") or []
+        # Baseline the journal BEFORE the first live-attach attempt so a run that
+        # completes during that first attach (or during any keepalive tick) is
+        # detected. Capturing it after the first attach would fold a just-completed
+        # run into the baseline and silently miss it. Such a run updates the journal
+        # but never materializes an in-memory STREAMS entry to attach, so without
+        # this an idle subscriber (esp. a no-cursor client) would miss that run's
+        # transcript until manual refresh.
+        _idle_journal_fp = session_journal_fingerprint(session_id)
         subscriber, subscriber_stream, stream_snapshot, active_stream_id = attach_active_stream()
         if subscriber is None:
             if replay_ok:
                 emit_replay(replay_events, active_stream_id, None)
-            # Baseline the journal so we can detect a run that starts AND finishes
-            # inside a single keepalive tick while we wait for a live stream. Such a
-            # run updates the journal but never materializes an in-memory STREAMS
-            # entry to attach, so without this an idle subscriber (esp. a no-cursor
-            # client) would silently miss that run's transcript until manual refresh.
-            _idle_journal_fp = session_journal_fingerprint(session_id)
             while True:
                 subscriber, subscriber_stream, stream_snapshot, active_stream_id = attach_active_stream()
                 if subscriber is not None:
                     break
                 # Journal advanced with no live stream to attach → a run completed
-                # entirely within the wait. Re-sync via a snapshot boundary (the
-                # same honest-recovery contract used for a failed reconciliation),
-                # then re-baseline so we only re-sync on genuinely new advances.
+                # entirely within the wait (or the first attach). Re-sync via a
+                # snapshot boundary (the same honest-recovery contract used for a
+                # failed reconciliation), then re-baseline so we only re-sync on
+                # genuinely new advances.
                 _current_journal_fp = session_journal_fingerprint(session_id)
                 if _current_journal_fp != _idle_journal_fp:
                     _idle_journal_fp = _current_journal_fp
