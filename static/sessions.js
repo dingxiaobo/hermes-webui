@@ -603,6 +603,47 @@ function _hasUnreadForSession(s) {
   return s.message_count > Number(counts[s.session_id] || 0);
 }
 
+// Keep the sidebar polling snapshot current for a just-visited session so a
+// deferred /api/sessions list refresh landing across the async message-load gap
+// cannot treat the unchanged, already-open session as a fresh background
+// completion and re-flag a stale unread dot (#4946).
+function _syncSessionListSnapshotOnVisit(sid, messageCount, lastMessageAt) {
+  if (!sid) return;
+  const count = Number(messageCount || 0);
+  const last = Number(lastMessageAt || 0);
+  _sessionListSnapshotById.set(sid, {message_count: count, last_message_at: last});
+  const isStreaming = Boolean(
+    S.session && S.session.session_id === sid
+    && (S.busy || S.activeStreamId || (S.session.active_stream_id && S.session.pending_user_message))
+  );
+  _sessionStreamingById.set(sid, isStreaming);
+  if (!isStreaming) _forgetObservedStreamingSession(sid);
+}
+
+// Acknowledge that the user actually visited/opened `sid`: clear its viewed
+// count (which also clears any stale completion-unread marker, #3020), sync the
+// polling snapshot so a deferred list poll cannot re-flag it, then repaint from
+// cache. Repainting via renderSessionListFromCache() recomputes each row's
+// aggregated unread state (own + children) authoritatively, so a lineage
+// PARENT keeps its own / other children's unread dot instead of being stripped
+// by ad-hoc DOM surgery (Greptile concern (b) on #4946).
+function _acknowledgeSessionVisit(sid, messageCount = 0, lastMessageAt = 0) {
+  if (!sid) return;
+  _setSessionViewedCount(sid, messageCount);
+  _syncSessionListSnapshotOnVisit(sid, messageCount, lastMessageAt);
+  if (typeof renderSessionListFromCache === 'function') renderSessionListFromCache();
+}
+
+// Does the session currently carry any unread state that a visit should clear?
+// Used by the same-session no-op guard so re-selecting the already-open session
+// still clears a stale dot before short-circuiting.
+function _sessionVisitHasUnreadState(sid) {
+  if (!sid) return false;
+  if (_hasSessionCompletionUnread(sid)) return true;
+  if (!S.session || S.session.session_id !== sid) return false;
+  return _hasUnreadForSession(S.session);
+}
+
 function _isSessionActivelyViewedForList(sid) {
   if (!sid || !S.session || S.session.session_id !== sid) return false;
   if (typeof _loadingSessionId !== 'undefined' && _loadingSessionId && _loadingSessionId !== sid) return false;
@@ -1425,7 +1466,19 @@ async function loadSession(sid){
   // #2971: idempotent re-arm before the no-op guard revives a stream a prior
   // failed loadSession killed; no-ops on real switches.
   _rearmActiveSessionStream();
-  if(currentSid===sid && !forceReload && (!_loadingSessionId || _loadingSessionId===sid)) return;
+  if(currentSid===sid && !forceReload && (!_loadingSessionId || _loadingSessionId===sid)){
+    // Re-selecting the already-open session is a no-op for transcript/scroll, but
+    // it is still a *visit*: clear a stale sidebar unread dot (e.g. one a
+    // background completion left on the open, unfocused pane) before returning.
+    if(_sessionVisitHasUnreadState(sid)){
+      _acknowledgeSessionVisit(
+        sid,
+        Number(S.session.message_count || 0),
+        Number(S.session.last_message_at || S.session.updated_at || 0)
+      );
+    }
+    return;
+  }
   // Mark this session as the in-flight load. Subsequent loadSession() calls
   // will overwrite this; stale awaits use the mismatch to bail out (#1060).
   const _loadGeneration = ++_loadSessionGeneration;
@@ -1711,8 +1764,15 @@ async function loadSession(sid){
   // Sync workspace display immediately so the chip label reflects the new session's workspace
   // before any async message-loading begins (mirrors how model is handled).
   if(typeof syncTopbar==='function') syncTopbar();
-  _setSessionViewedCount(S.session.session_id, Number(data.session.message_count || 0));
-  _clearSessionCompletionUnread(S.session.session_id);
+  // Acknowledge the visit as soon as the session metadata is accepted for the
+  // in-flight load: clears the viewed count + any stale completion-unread marker
+  // and syncs the polling snapshot so a deferred /api/sessions poll landing
+  // during the async message-load gap below cannot re-flag a stale unread dot.
+  _acknowledgeSessionVisit(
+    S.session.session_id,
+    Number(data.session.message_count || 0),
+    Number(data.session.last_message_at || data.session.updated_at || 0)
+  );
   try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
   _setActiveSessionUrl(S.session.session_id);
   if(typeof startSessionStream==='function') startSessionStream(S.session.session_id);
@@ -2052,6 +2112,18 @@ async function loadSession(sid){
 
   // Clear the in-flight session marker now that this load has completed (#1060).
   if (_isCurrentLoad()) _loadingSessionId = null;
+
+  // Re-acknowledge the visit after the async message-load gap. A deferred
+  // sidebar /api/sessions poll can land while _ensureMessagesLoaded is in
+  // flight and re-mark the open session unread; re-syncing here clears that
+  // sticky dot once the transcript is settled (#4946).
+  if (S.session && S.session.session_id === sid) {
+    _acknowledgeSessionVisit(
+      sid,
+      Number(S.session.message_count || 0),
+      Number(S.session.last_message_at || S.session.updated_at || 0)
+    );
+  }
 
   if(typeof renderSessionArtifacts==='function') renderSessionArtifacts();
 
