@@ -2565,6 +2565,15 @@ def _looks_invalid_generated_title(text: str) -> bool:
     )
 
 
+def _message_content_part_text(part) -> str:
+    """Extract visible text from a structured content part."""
+    if not isinstance(part, dict):
+        return ''
+    return str(
+        part.get('text') or part.get('content') or part.get('input_text') or part.get('output_text') or ''
+    )
+
+
 def _message_text(value) -> str:
     """Extract plain text from mixed message content payloads."""
     if isinstance(value, list):
@@ -2574,9 +2583,41 @@ def _message_text(value) -> str:
                 continue
             ptype = str(p.get('type') or '').lower()
             if ptype in ('', 'text', 'input_text', 'output_text'):
-                parts.append(str(p.get('text') or p.get('content') or ''))
+                parts.append(_message_content_part_text(p))
         return _strip_thinking_markup('\n'.join(parts).strip())
     return _strip_thinking_markup(str(value or '').strip())
+
+
+def _assistant_content_part_is_tool_use(part) -> bool:
+    """Return True when a content[] part represents a tool invocation boundary."""
+    if not isinstance(part, dict):
+        return False
+    part_type = str(part.get('type') or '').lower()
+    if part_type in {'tool_use', 'tool_call'}:
+        return True
+    if part_type:
+        return False
+    return any(part.get(key) for key in ('tool_use_id', 'tool_call_id', 'call_id')) and bool(
+        part.get('name') or part.get('tool_name') or part.get('input') or part.get('args')
+    )
+
+
+def _assistant_message_has_final_visible_text(message) -> bool:
+    """Return True when an assistant row carries a settled visible answer."""
+    if not isinstance(message, dict) or message.get('role') != 'assistant':
+        return False
+    content = message.get('content', '')
+    if isinstance(content, list):
+        last_tool_idx = -1
+        for idx, part in enumerate(content):
+            if _assistant_content_part_is_tool_use(part):
+                last_tool_idx = idx
+        tail_parts = content[last_tool_idx + 1:] if last_tool_idx >= 0 else content
+        return bool(_message_text(tail_parts).strip())
+    if message.get('tool_calls'):
+        return False
+    return bool(_message_text(content).strip())
+
 
 
 _WORKSPACE_PREFIX_RE = re.compile(r'^\s*\[Workspace::v1:\s*(?:\\.|[^\]\\])+\]\s*')
@@ -4873,7 +4914,7 @@ def _raw_message_text(value) -> str:
     """
     if isinstance(value, list):
         return ' '.join(
-            str(p.get('text') or p.get('content') or '')
+            _message_content_part_text(p)
             for p in value
             if isinstance(p, dict)
         )
@@ -5582,7 +5623,7 @@ def _assistant_reply_added_after_current_turn(result_messages, previous_context,
         isinstance(m, dict)
         and m.get('role') == 'assistant'
         and not m.get('_error')
-        and str(m.get('content') or '').strip()
+        and _assistant_message_has_final_visible_text(m)
         for m in candidates
     )
 
@@ -5600,18 +5641,7 @@ def _session_lacks_final_assistant_answer(messages) -> bool:
         if role == 'tool':
             return True
         if role == 'assistant':
-            content = msg.get('content')
-            if isinstance(content, list):
-                text = '\n'.join(
-                    str(part.get('text') or part.get('content') or '')
-                    for part in content
-                    if isinstance(part, dict)
-                )
-            else:
-                text = str(content or '')
-            if msg.get('tool_calls'):
-                return True
-            if text.strip():
+            if _assistant_message_has_final_visible_text(msg):
                 return False
             continue
         if role == 'user':
