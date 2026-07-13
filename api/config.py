@@ -8198,23 +8198,42 @@ def warm_models_catalog_provenance_if_cold() -> None:
     (``_is_loadable_disk_cache``), so a load success means it belongs to this
     profile. Callers must not hold ``_cfg_lock`` (this reads config for the
     fingerprint); the send worker satisfies that.
+
+    Profile isolation: the fast no-op is taken ONLY when the resident provenance
+    fingerprint matches the CURRENT profile's runtime fingerprint. The catalog
+    globals are process-wide, so a concurrently-active profile B could have left
+    its own (or a stale) provenance resident; an unconditional non-``None``
+    early return would let B's catalog block profile A from loading A's own valid
+    disk cache (A would then resolve against B's advertised ids). Comparing the
+    published fingerprint to the current one before short-circuiting closes that
+    hole — a mismatch falls through to load THIS profile's disk snapshot.
     """
     global _available_models_cache, _available_models_cache_ts
     global _available_models_cache_source_fingerprint
-    if _models_cache_provenance is not None:
-        return  # already warm — one global read, no work
+
+    def _provenance_is_current() -> bool:
+        prov = _models_cache_provenance
+        if prov is None:
+            return False
+        try:
+            return prov[1] == _models_cache_source_fingerprint()
+        except Exception:
+            return False
+
+    if _provenance_is_current():
+        return  # already warm for THIS profile — one global read, no work
     got = _available_models_cache_lock.acquire(blocking=False)
     if not got:
         return  # a concurrent build/publish holds the lock; it will publish
     try:
-        if _models_cache_provenance is not None:
-            return  # published while we waited for the lock
+        if _provenance_is_current():
+            return  # published for this profile while we waited for the lock
         try:
             disk_groups = _load_models_cache_from_disk()
         except Exception:
             disk_groups = None
         if disk_groups is None:
-            return  # no durable cache → stay cold, resolver preserves verbatim
+            return  # no durable cache for this profile → stay cold, preserve verbatim
         _available_models_cache = disk_groups
         _available_models_cache_ts = time.monotonic()
         try:

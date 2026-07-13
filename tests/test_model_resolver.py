@@ -581,19 +581,54 @@ def test_warm_models_catalog_provenance_if_cold_publishes_from_disk_5979():
 
 
 def test_warm_models_catalog_provenance_noop_when_already_warm_5979():
-    """The warm helper is a cheap no-op (single global read) when provenance is
-    already published — it must not rebuild or mutate a warm catalog.
+    """The warm helper is a cheap no-op when provenance for the CURRENT profile
+    is already published — it must not reload or mutate a warm catalog.
     """
-    sentinel = ({'groups': []}, {'config_yaml': {'path': '/x'}})
+    # Use the CURRENT runtime fingerprint so the profile-match fast path is hit.
+    current_fp = config._models_cache_source_fingerprint()
+    sentinel = ({'groups': []}, current_fp)
     old_prov = config._models_cache_provenance
     config._models_cache_provenance = sentinel
     try:
         config.warm_models_catalog_provenance_if_cold()
         assert config._models_cache_provenance is sentinel, (
-            "warm helper must not touch an already-warm provenance tuple"
+            "warm helper must not touch already-warm current-profile provenance"
         )
     finally:
         config._models_cache_provenance = old_prov
+
+
+def test_warm_models_catalog_provenance_ignores_foreign_profile_resident_5979(monkeypatch):
+    """Profile isolation (Codex finding): a FOREIGN profile's resident provenance
+    must NOT satisfy the fast no-op. The helper falls through, loads THIS
+    profile's own disk snapshot, and republishes provenance stamped with the
+    current runtime fingerprint — so a concurrently-active profile's catalog can
+    never block this profile from warming its own.
+    """
+    foreign = ({'groups': [{'provider_id': 'custom', 'models': [{'id': 'gpt-5.4'}]}]},
+               {'config_yaml': {'path': '/some/other/profile'}})
+    my_disk = {'groups': [{'provider_id': 'custom:llm-proxy',
+                           'models': [{'id': 'x-ai/grok-composer-2.5-fast'}]}]}
+    old_prov = config._models_cache_provenance
+    old_cache = config._available_models_cache
+    old_fp = config._available_models_cache_source_fingerprint
+    old_memo = config._advertised_model_ids_memo
+    config._models_cache_provenance = foreign
+    monkeypatch.setattr(config, '_load_models_cache_from_disk', lambda: my_disk)
+    try:
+        config.warm_models_catalog_provenance_if_cold()
+        prov = config._models_cache_provenance
+        assert prov is not None and prov[0] is my_disk, (
+            "warm must replace foreign provenance with THIS profile's disk snapshot"
+        )
+        assert prov[1] == config._models_cache_source_fingerprint(), (
+            "republished provenance must carry the current profile's fingerprint"
+        )
+    finally:
+        config._models_cache_provenance = old_prov
+        config._available_models_cache = old_cache
+        config._available_models_cache_source_fingerprint = old_fp
+        config._advertised_model_ids_memo = old_memo
 
 
 def test_warm_models_catalog_provenance_never_live_rebuilds_5979(monkeypatch):
