@@ -13,6 +13,10 @@
 
 - **Deep-link straight to a profile with `?profile=<name>`.** Opening the WebUI with a `?profile=NAME` query parameter now switches to that profile on boot. The name is validated against the existing profile allowlist (a nonexistent profile boots normally, path-traversal / cross-profile attempts are rejected), the switch goes through the same access-enforced `switchToProfile`, and boot fails safe on anything invalid. Thanks @rodboev. (#5730, #5682)
 
+- **Model picker no longer duplicates or drops proxy/catalog models.** When the same model was reachable via both a custom proxy and a first-party catalog (e.g. `grok-4.5`), the picker could show it twice; the dedup fix collapses true duplicates to one selectable row while keeping genuinely-distinct models that merely share a name suffix — including colon-suffixed proxy models like `…:free` / `…:thinking` / `…:latest` — independently selectable. The currently-selected model always survives dedup, and model restore no longer substitutes a suffix-sharing sibling for a missing model. Thanks @rodboev. (#5997, #5989)
+
+- **Simplified Chinese (zh-CN) localization fill.** Untranslated English strings in the zh-CN locale are now translated, so Simplified Chinese users no longer see English fall-through text across recently-added UI. Thanks @Loukky. (#6024)
+
 - **WebUI-created git worktrees can now be cleaned up (no more orphan accumulation).** The agent locks every worktree it creates, and git refuses to remove a locked worktree with a single `--force`, so WebUI-created worktrees were piling up unremovable. Session-worktree removal now runs a fail-soft `git worktree unlock` right before the remove (mirroring the agent's own cleanup ordering); the existing dirty/uncommitted-changes guard still runs first, so user data stays protected. Thanks @ayxuerui. (#6028, #6023)
 
 ### Fixed
