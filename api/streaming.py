@@ -2080,7 +2080,12 @@ def _explicit_text_signal(cfg: dict) -> bool:
     return provider not in ("", "auto") or bool(model_name) or bool(base_url)
 
 
-def _resolve_image_input_mode(cfg: dict) -> str:
+def _resolve_image_input_mode(
+    cfg: dict,
+    *,
+    effective_provider: str | None = None,
+    effective_model: str | None = None,
+) -> str:
     """Return ``"native"`` or ``"text"`` for current-turn image uploads.
 
     Delegates the routing decision to ``agent/image_routing.py:
@@ -2113,8 +2118,8 @@ def _resolve_image_input_mode(cfg: dict) -> str:
         from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
         from agent.auxiliary_client import _read_main_provider, _read_main_model
 
-        provider = (_read_main_provider() or "").strip()
-        model = (_read_main_model() or "").strip()
+        provider = str(effective_provider or _read_main_provider() or "").strip()
+        model = str(effective_model or _read_main_model() or "").strip()
 
         mode = decide_image_input_mode(provider, model, cfg)
         if mode == "native":
@@ -2140,7 +2145,16 @@ def _resolve_image_input_mode(cfg: dict) -> str:
     return "native"
 
 
-def _build_native_multimodal_message(workspace_ctx: str, msg_text: str, attachments, workspace: str, *, cfg: dict = None):
+def _build_native_multimodal_message(
+    workspace_ctx: str,
+    msg_text: str,
+    attachments,
+    workspace: str,
+    *,
+    cfg: dict = None,
+    effective_provider: str | None = None,
+    effective_model: str | None = None,
+):
     """Build native multimodal content parts for current-turn image uploads.
 
     WebUI uploads files into the active workspace. For image files, pass the
@@ -2156,7 +2170,11 @@ def _build_native_multimodal_message(workspace_ctx: str, msg_text: str, attachme
         return workspace_ctx + msg_text
 
     # ── Check image_input_mode before embedding anything ──
-    if cfg is not None and _resolve_image_input_mode(cfg) == "text":
+    if cfg is not None and _resolve_image_input_mode(
+        cfg,
+        effective_provider=effective_provider,
+        effective_model=effective_model,
+    ) == "text":
         return workspace_ctx + msg_text
 
     parts = [{'type': 'text', 'text': workspace_ctx + msg_text}]
@@ -4029,7 +4047,11 @@ def _sanitize_messages_for_api(
     remaining replay gap where an older native image in the saved transcript kept
     causing 400s on every later text-only turn (#2297).
     """
-    strip_native_images = cfg is not None and _resolve_image_input_mode(cfg) == "text"
+    strip_native_images = cfg is not None and _resolve_image_input_mode(
+        cfg,
+        effective_provider=effective_provider,
+        effective_model=effective_model,
+    ) == "text"
     # First pass: collect all tool_call_ids declared by assistant messages.
     # Handles both OpenAI ('id') and Anthropic ('call_id') field names.
     valid_tool_call_ids: set = set()
@@ -8507,7 +8529,15 @@ def _run_agent_streaming(
             _agent_msg_text = msg_text
             if _process_notifications:
                 _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
-            user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg)
+            user_message = _build_native_multimodal_message(
+                workspace_ctx,
+                _agent_msg_text,
+                attachments,
+                workspace,
+                cfg=_cfg,
+                effective_provider=resolved_provider,
+                effective_model=resolved_model,
+            )
             _persistent_state_before = _persistent_state_snapshot(_profile_home)
             _run_conversation_kwargs = dict(
                 user_message=user_message,

@@ -1291,6 +1291,37 @@ def test_resolve_image_input_mode_known_vision_model_forwards_native(monkeypatch
     assert streaming._resolve_image_input_mode(cfg) == "native"
 
 
+def test_resolve_image_input_mode_uses_current_session_runtime(monkeypatch):
+    """Per-session model selection must win over stale process-global routing."""
+    import sys
+    import types
+
+    calls = []
+    img = types.ModuleType("agent.image_routing")
+
+    def decide(provider, model, cfg):
+        calls.append((provider, model))
+        return "native"
+
+    img.decide_image_input_mode = decide
+    img._lookup_supports_vision = lambda _p, _m, cfg=None: True
+    aux = types.ModuleType("agent.auxiliary_client")
+    aux._read_main_provider = lambda: "custom:stale-provider"
+    aux._read_main_model = lambda: "stale-model"
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.image_routing", img)
+    monkeypatch.setitem(sys.modules, "agent.auxiliary_client", aux)
+
+    mode = streaming._resolve_image_input_mode(
+        {"agent": {"image_input_mode": "auto"}},
+        effective_provider="custom:yunshibailian",
+        effective_model="qwen3.7-plus",
+    )
+
+    assert mode == "native"
+    assert calls == [("custom:yunshibailian", "qwen3.7-plus")]
+
+
 def test_resolve_image_input_mode_explicit_text_signal_honored(monkeypatch):
     """An explicit user choice for the text pipeline is honoured even for an
     unknown model — the carve-out only fires when there is NO explicit signal.
