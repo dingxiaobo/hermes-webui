@@ -19569,10 +19569,25 @@ def _handle_live_models(handler, parsed):
                         custom_provider_entry = _cp
                     _config_ids.extend(_custom_provider_model_ids(_cp))
             
-            # Always try live fetch for custom providers — config entries are a
-            # fallback, not a replacement.  The live endpoint should return ALL
-            # models the key has access to, not just what's listed in config.yaml.
-            if provider == "custom" or provider.startswith("custom:"):
+            # Always try live fetch for custom providers unless an explicit
+            # discover_models: false allowlist opts out. In that mode
+            # /api/models/live must return only config-specified models;
+            # otherwise the frontend merges the upstream /v1/models catalog
+            # back into the picker.
+            _discover_custom_models = True
+            if custom_provider_entry:
+                _discover_raw = custom_provider_entry.get("discover_models", True)
+                if isinstance(_discover_raw, str):
+                    _discover_custom_models = _discover_raw.strip().lower() not in {
+                        "false", "no", "0", "off",
+                    }
+                else:
+                    _discover_custom_models = _discover_raw is not False
+
+            if (
+                (provider == "custom" or provider.startswith("custom:"))
+                and _discover_custom_models
+            ):
                 _base_url = None
                 _api_key = None
                 if custom_provider_entry:
@@ -19638,15 +19653,15 @@ def _handle_live_models(handler, parsed):
                     except Exception as _fetch_err:
                         logger.debug("Live fetch from custom provider failed: %s", _fetch_err)
 
-                # If live fetch succeeded, merge with config entries (live takes
-                # priority).  If live fetch failed, fall back to config-only list.
-                if ids:
-                    _live_set = set(ids)
-                    for _cid in _config_ids:
-                        if _cid not in _live_set:
-                            ids.append(_cid)
-                else:
-                    ids = list(_config_ids)
+            # If live fetch succeeded, merge with config entries (live takes
+            # priority). If probing was disabled or failed, use config only.
+            if ids:
+                _live_set = set(ids)
+                for _cid in _config_ids:
+                    if _cid not in _live_set:
+                        ids.append(_cid)
+            else:
+                ids = list(_config_ids)
 
         # ── OpenAI-compat live fetch fallback ──────────────────────────────────
         # When provider_model_ids() is unavailable or returns [] for a provider

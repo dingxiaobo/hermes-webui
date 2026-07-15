@@ -385,6 +385,36 @@ class TestLiveModelsCustomProviderFallback:
         ]
         assert [m["id"] for m in resp["models"]] == ["right-live-model"]
 
+    def test_named_custom_discovery_disabled_returns_only_configured_models(self, monkeypatch):
+        """discover_models: false must skip /v1/models in the live endpoint."""
+        import urllib.request
+
+        def unexpected_urlopen(*_args, **_kwargs):
+            raise AssertionError("/v1/models must not be called")
+
+        monkeypatch.setattr(urllib.request, "urlopen", unexpected_urlopen)
+        cfg = {
+            "model": {"provider": "custom:abm-aiworker"},
+            "custom_providers": [
+                {
+                    "name": "abm-aiworker",
+                    "base_url": "https://abm-aiworker.example/v1",
+                    "api_key": "secret",
+                    "discover_models": False,
+                    "model": "gpt-5.6-sol",
+                    "models": {
+                        "gpt-5.6-sol": {},
+                        "gpt-5.5": {},
+                    },
+                }
+            ],
+        }
+
+        resp = self._call_live_models(monkeypatch, cfg, "custom:abm-aiworker")
+
+        assert resp["provider"] == "custom:abm-aiworker"
+        assert [m["id"] for m in resp["models"]] == ["gpt-5.6-sol", "gpt-5.5"]
+
     def test_standard_provider_live_fetch_does_not_reuse_active_provider_key(self, monkeypatch):
         """A requested provider must not receive another provider's top-level key."""
         import urllib.request

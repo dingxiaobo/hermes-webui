@@ -418,6 +418,75 @@ _DEFAULT_AGENT_PERSONALITIES = {
 }
 
 
+def _normalize_providers_dict_to_custom_list(config_obj: dict) -> None:
+    """Materialize ``providers:`` (v12+ dict) into ``custom_providers:`` (list).
+
+    The WebUI's resolution paths historically read ``custom_providers`` (the
+    legacy list schema). Hermes-Agent migrated to ``providers:`` (a keyed
+    dict) in config v12, and the runtime reads both via
+    ``get_compatible_custom_providers()``. This in-place normalization lets
+    every existing ``cfg.get('custom_providers', [])`` call site see entries
+    declared under ``providers:`` without per-site changes.
+
+    Field mapping (reverse of hermes-agent's ``_custom_provider_entry_to_provider_config``):
+      dict key        -> name
+      api             -> base_url
+      default_model   -> model
+      transport       -> api_mode
+      (api_key, key_env, models, context_length, rate_limit_delay,
+       discover_models, extra_body, ssl_ca_cert, ssl_verify stay as-is)
+    """
+    providers_dict = config_obj.get("providers")
+    if not isinstance(providers_dict, dict) or not providers_dict:
+        return
+    existing = config_obj.get("custom_providers")
+    if not isinstance(existing, list):
+        existing = []
+    seen_pairs: set = set()
+    for ex in existing:
+        if isinstance(ex, dict):
+            n = str(ex.get("name", "") or "").strip().lower()
+            u = str(ex.get("base_url", "") or "").strip().rstrip("/").lower()
+            if n and u:
+                seen_pairs.add((n, u))
+    for key, entry in providers_dict.items():
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or key or "").strip()
+        base_url = str(
+            entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+        ).strip()
+        if not name or not base_url:
+            continue
+        pair = (name.lower(), base_url.rstrip("/").lower())
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        normalized: dict = {
+            "name": name,
+            "base_url": base_url,
+        }
+        for fld in (
+            "api_key", "key_env", "models", "context_length",
+            "rate_limit_delay", "discover_models", "extra_body",
+            "ssl_ca_cert", "ssl_verify",
+        ):
+            v = entry.get(fld)
+            if v is not None:
+                normalized[fld] = v
+        if "default_model" in entry and entry["default_model"]:
+            normalized["model"] = entry["default_model"]
+        elif "model" in entry and entry["model"]:
+            normalized["model"] = entry["model"]
+        if "transport" in entry and entry["transport"]:
+            normalized["api_mode"] = entry["transport"]
+        elif "api_mode" in entry and entry["api_mode"]:
+            normalized["api_mode"] = entry["api_mode"]
+        existing.append(normalized)
+    if existing:
+        config_obj["custom_providers"] = existing
+
+
 def _apply_config_defaults(config_data: dict) -> None:
     """Populate documented default-only config keys in-place."""
     agent_cfg = config_data.get("agent")
@@ -585,6 +654,7 @@ def _refresh_config_cache(config_path: Path | None = None) -> None:
     except Exception:
         logger.debug("Failed to load yaml config from %s", config_path)
     _apply_config_defaults(_cfg_cache)
+    _normalize_providers_dict_to_custom_list(_cfg_cache)
     _cfg_fingerprint = _fingerprint_config(_cfg_cache)
     # Bust the models cache so the next request sees fresh config values.
     # Only delete the disk cache when config has actually changed -- not on
@@ -728,6 +798,7 @@ def get_config_for_profile_home(profile_home: "Path | str | None") -> dict:
     # personalities) without mutating any global cache state.
     profile_cfg = _load_yaml_config_file(target / "config.yaml")
     _apply_config_defaults(profile_cfg)
+    _normalize_providers_dict_to_custom_list(profile_cfg)
     return profile_cfg
 
 
@@ -5096,6 +5167,21 @@ def _static_models_catalog_without_live_probes() -> dict:
                 is_provider_config = isinstance(provider_cfg, dict)
                 if not (is_known_provider or is_provider_config):
                     continue
+                # Custom OpenAI-compat endpoints declared under providers: are
+                # materialized into custom_providers: by
+                # _normalize_providers_dict_to_custom_list. Skip them here to
+                # avoid duplicate model-picker groups — the custom_providers:
+                # scan below creates the correct custom: prefixed slug.
+                if not is_known_provider and isinstance(provider_cfg, dict):
+                    _has_endpoint = bool(
+                        str(
+                            provider_cfg.get("api")
+                            or provider_cfg.get("base_url")
+                            or ""
+                        ).strip()
+                    )
+                    if _has_endpoint:
+                        continue
                 canonical_to_raw_provider_key.setdefault(canonical, provider_key)
                 if isinstance(provider_cfg, dict):
                     has_local_signal = any(
@@ -6784,6 +6870,21 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                     and _canonical == _canonicalise_provider_id(active_provider)
                 )
                 if not (_is_known_provider or _has_provider_route or _has_models_only_active_route):
+                    continue
+
+                # New-style custom endpoints under providers: are mirrored into
+                # custom_providers: during config loading. Let the named-custom
+                # path below own them so the picker emits one custom:<slug>
+                # group instead of a second bare <slug> group.
+                if (
+                    not _is_known_provider
+                    and _is_provider_config
+                    and str(
+                        _provider_cfg.get("api")
+                        or _provider_cfg.get("base_url")
+                        or ""
+                    ).strip()
+                ):
                     continue
 
                 _canonical_to_raw_provider_key.setdefault(_canonical, _pid_key)
