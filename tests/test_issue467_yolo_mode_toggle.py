@@ -13,6 +13,8 @@ import os
 import re
 import json
 import pathlib
+import shutil
+import subprocess
 import pytest
 
 from tests.conftest import requires_agent_modules
@@ -213,10 +215,65 @@ class TestYoloPillHTML:
     def test_yolo_pill_has_onclick(self, index_html):
         assert 'onclick="cmdYolo()"' in index_html
 
-    def test_yolo_pill_hidden_by_default(self, index_html):
+    def test_yolo_pill_visible_by_default(self, index_html):
         pill_match = re.search(r'<button[^>]*id="yoloPill"[^>]*>', index_html)
         assert pill_match
-        assert "display:none" in pill_match.group(0)
+        assert "display:none" not in pill_match.group(0)
+
+    def test_yolo_pill_renders_off_and_on_states(self, messages_js):
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node is required for the frontend behavior harness")
+
+        start = messages_js.index("function _updateYoloPill()")
+        brace = messages_js.index("{", start)
+        depth = 0
+        end = None
+        for idx in range(brace, len(messages_js)):
+            if messages_js[idx] == "{":
+                depth += 1
+            elif messages_js[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + 1
+                    break
+        assert end is not None
+        function_source = messages_js[start:end]
+
+        script = f"""
+let _yoloEnabled = false;
+const classes = new Set();
+const attrs = {{}};
+const pill = {{
+  style: {{display: 'none'}},
+  title: '',
+  classList: {{
+    toggle(name, enabled) {{
+      if (enabled) classes.add(name); else classes.delete(name);
+    }},
+  }},
+  setAttribute(name, value) {{ attrs[name] = String(value); }},
+  removeAttribute(name) {{ delete attrs[name]; }},
+}};
+const $ = id => id === 'yoloPill' ? pill : null;
+const t = key => key;
+const applyLocaleToDOM = () => {{}};
+eval({json.dumps(function_source)});
+
+_updateYoloPill();
+if (pill.style.display !== '') throw new Error('disabled YOLO pill must remain visible');
+if (classes.has('active')) throw new Error('disabled YOLO pill must not look active');
+if (attrs['aria-pressed'] !== 'false') throw new Error('disabled YOLO pill must expose aria-pressed=false');
+if (attrs['data-i18n-title'] !== 'cmd_yolo') throw new Error('disabled YOLO pill must use the toggle title');
+
+_yoloEnabled = true;
+_updateYoloPill();
+if (!classes.has('active')) throw new Error('enabled YOLO pill must look active');
+if (attrs['aria-pressed'] !== 'true') throw new Error('enabled YOLO pill must expose aria-pressed=true');
+if (attrs['data-i18n-title'] !== 'yolo_pill_title_active') throw new Error('enabled YOLO pill must use the active title');
+"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
 
     def test_skip_all_button_exists(self, index_html):
         assert 'id="approvalSkipAll"' in index_html

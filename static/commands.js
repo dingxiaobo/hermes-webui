@@ -1885,7 +1885,7 @@ function cmdVoice(){
 
 // ── YOLO mode toggle ──
 // Session-scoped: skips all approval prompts for the current session.
-// Toggles on/off; state is not persisted across page reloads.
+// Server-side memory survives page reloads but is cleared by a server restart.
 async function cmdYolo(){
   const sid=S.session&&S.session.session_id;
   if(!sid){showToast(t('yolo_no_session'));return;}
